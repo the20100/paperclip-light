@@ -219,6 +219,7 @@ const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC = 1;
 const MAX_TURN_CONTINUATION_MAX_DELAY_SEC = 300;
+const LIGHT_MODEL_CAPABILITIES = ["code", "tools", "vision", "browser", "reasoning", "long_context"] as const;
 
 function clampInteger(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.floor(value)));
@@ -226,6 +227,18 @@ function clampInteger(value: number, min: number, max: number) {
 
 function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
+}
+
+function LightExecutionRunPolicyNote() {
+  return (
+    <div
+      role="note"
+      className="rounded-md border border-border bg-muted/35 px-3 py-2 text-xs leading-relaxed text-muted-foreground"
+    >
+      Light mode is event-driven. This agent runs for assigned tasks, explicit resume requests,
+      mentions, reviews, routines, retries, and resolved dependencies — never on a periodic timer.
+    </div>
+  );
 }
 
 /* ---- Form ---- */
@@ -241,7 +254,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const companyLightExecutionEnabled = selectedCompany?.executionProfile === "light";
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
@@ -715,6 +729,35 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = fetchedModels ?? externalModels ?? [];
+  const runtimeConfigOverride = !isCreate ? asObject(overlay.runtime.runtimeConfig) : {};
+  const effectiveAgentRuntimeConfig = !isCreate && Object.keys(runtimeConfigOverride).length > 0
+    ? runtimeConfigOverride
+    : runtimeConfig;
+  const effectiveAgentExecutionMode = typeof effectiveAgentRuntimeConfig.executionMode === "string"
+    ? effectiveAgentRuntimeConfig.executionMode
+    : "inherit";
+  const lightExecutionEnabled = isCreate
+    ? companyLightExecutionEnabled
+    : effectiveAgentExecutionMode === "light"
+      || (effectiveAgentExecutionMode !== "standard" && companyLightExecutionEnabled);
+  const lightRouting = asObject(effectiveAgentRuntimeConfig.lightRouting);
+  const lightRequiredCapabilities = Array.isArray(lightRouting.requiredCapabilities)
+    ? lightRouting.requiredCapabilities.filter((value): value is string => typeof value === "string")
+    : [];
+  const lightFallbackModels = Array.isArray(lightRouting.fallbackModels)
+    ? lightRouting.fallbackModels
+        .map((value) => asObject(value).model)
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+
+  function updateAgentRuntimeConfig(patch: Record<string, unknown>) {
+    if (isCreate) return;
+    mark("runtime", "runtimeConfig", { ...effectiveAgentRuntimeConfig, ...patch });
+  }
+
+  function updateLightRouting(patch: Record<string, unknown>) {
+    updateAgentRuntimeConfig({ lightRouting: { ...lightRouting, ...patch } });
+  }
   const adapterCommandField = "command";
   const {
     data: detectedModelData,
@@ -1903,18 +1946,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <ToggleWithNumber
-              label="Heartbeat on interval"
-              hint={help.heartbeatInterval}
-              checked={val!.heartbeatEnabled}
-              onCheckedChange={(v) => set!({ heartbeatEnabled: v })}
-              number={val!.intervalSec}
-              onNumberChange={(v) => set!({ intervalSec: v })}
-              numberLabel="sec"
-              numberPrefix="Run heartbeat every"
-              numberHint={help.intervalSec}
-              showNumber={val!.heartbeatEnabled}
-            />
+            {lightExecutionEnabled ? (
+              <LightExecutionRunPolicyNote />
+            ) : (
+              <ToggleWithNumber
+                label="Heartbeat on interval"
+                hint={help.heartbeatInterval}
+                checked={val!.heartbeatEnabled}
+                onCheckedChange={(v) => set!({ heartbeatEnabled: v })}
+                number={val!.intervalSec}
+                onNumberChange={(v) => set!({ intervalSec: v })}
+                numberLabel="sec"
+                numberPrefix="Run heartbeat every"
+                numberHint={help.intervalSec}
+                showNumber={val!.heartbeatEnabled}
+              />
+            )}
           </div>
         </div>
       ) : !isCreate ? (
@@ -1925,20 +1972,119 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           }
           <div className={cn(cards ? "border border-border rounded-lg overflow-hidden" : "")}>
             <div className={cn(cards ? "p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <ToggleWithNumber
-                label="Heartbeat on interval"
-                hint={help.heartbeatInterval}
-                checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
-                onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
-                number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
-                onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
-                numberLabel="sec"
-                numberPrefix="Run heartbeat every"
-                numberHint={help.intervalSec}
-                showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
-              />
+              <Field label="Execution mode" hint="Inherit the company profile or override this agent explicitly.">
+                <select
+                  className={inputClass}
+                  value={typeof effectiveAgentRuntimeConfig.executionMode === "string" ? effectiveAgentRuntimeConfig.executionMode : "inherit"}
+                  onChange={(event) => updateAgentRuntimeConfig({ executionMode: event.target.value })}
+                >
+                  <option value="inherit">Inherit company</option>
+                  <option value="light">Force Light</option>
+                  <option value="standard">Force Standard</option>
+                </select>
+              </Field>
+              {lightExecutionEnabled ? (
+                <div className="space-y-4">
+                  <LightExecutionRunPolicyNote />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Model routing" hint="Fixed uses the selected order. Auto leaves room for deterministic task-aware routing.">
+                      <select
+                        className={inputClass}
+                        value={lightRouting.mode === "auto" ? "auto" : "fixed"}
+                        onChange={(event) => updateLightRouting({ mode: event.target.value })}
+                      >
+                        <option value="fixed">Fixed</option>
+                        <option value="auto">Auto</option>
+                      </select>
+                    </Field>
+                    <Field label="Primary model" hint="Provider-native model id; compatible with OpenCode and local open-source providers.">
+                      <input
+                        className={inputClass}
+                        list="paperclip-light-models"
+                        value={typeof lightRouting.primaryModel === "string" ? lightRouting.primaryModel : ""}
+                        placeholder="Use adapter default"
+                        onChange={(event) => updateLightRouting({ primaryModel: event.target.value || undefined })}
+                      />
+                      <datalist id="paperclip-light-models">
+                        {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                      </datalist>
+                    </Field>
+                    <Field label="Fallback models" hint="Comma-separated provider model ids, tried in this order after technical failures.">
+                      <input
+                        className={inputClass}
+                        value={lightFallbackModels.join(", ")}
+                        placeholder="provider/model-small, provider/model-large"
+                        onChange={(event) => updateLightRouting({
+                          fallbackModels: parseCommaArgs(event.target.value).map((model) => ({
+                            model,
+                            capabilities: lightRequiredCapabilities,
+                          })),
+                        })}
+                      />
+                    </Field>
+                    <Field label="If provider is unavailable" hint="Fallback tries the configured list; pause sends the task to human attention with a reason.">
+                      <select
+                        className={inputClass}
+                        value={lightRouting.onUnavailable === "pause" ? "pause" : "fallback"}
+                        onChange={(event) => updateLightRouting({ onUnavailable: event.target.value })}
+                      >
+                        <option value="fallback">Use fallback</option>
+                        <option value="pause">Pause task</option>
+                      </select>
+                    </Field>
+                  </div>
+                  <ToggleField
+                    label="Enable model fallback"
+                    hint="Technical retries advance through the fallback list while preserving the task context ledger."
+                    checked={lightRouting.fallbackEnabled !== false}
+                    onChange={(checked) => updateLightRouting({ fallbackEnabled: checked })}
+                  />
+                  <Field label="Required capabilities" hint="Fallback candidates missing one of these capabilities are skipped.">
+                    <div className="flex flex-wrap gap-2">
+                      {LIGHT_MODEL_CAPABILITIES.map((capability) => {
+                        const selected = lightRequiredCapabilities.includes(capability);
+                        return (
+                          <button
+                            key={capability}
+                            type="button"
+                            aria-pressed={selected}
+                            className={cn(
+                              "rounded-md border px-2 py-1 text-xs transition-colors",
+                              selected ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground hover:text-foreground",
+                            )}
+                            onClick={() => {
+                              const requiredCapabilities = selected
+                                ? lightRequiredCapabilities.filter((value) => value !== capability)
+                                : [...lightRequiredCapabilities, capability];
+                              updateLightRouting({
+                                requiredCapabilities,
+                                fallbackModels: lightFallbackModels.map((model) => ({ model, capabilities: requiredCapabilities })),
+                              });
+                            }}
+                          >
+                            {capability.replaceAll("_", " ")}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Field>
+                </div>
+              ) : (
+                <ToggleWithNumber
+                  label="Heartbeat on interval"
+                  hint={help.heartbeatInterval}
+                  checked={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                  onCheckedChange={(v) => mark("heartbeat", "enabled", v)}
+                  number={eff("heartbeat", "intervalSec", Number(heartbeat.intervalSec ?? 300))}
+                  onNumberChange={(v) => mark("heartbeat", "intervalSec", v)}
+                  numberLabel="sec"
+                  numberPrefix="Run heartbeat every"
+                  numberHint={help.intervalSec}
+                  showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
+                />
+              )}
             </div>
-            <CollapsibleSection
+            {!lightExecutionEnabled && <CollapsibleSection
               title="Advanced Run Policy"
               bordered={cards}
               open={runPolicyAdvancedOpen}
@@ -2014,7 +2160,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 ) : null}
               </div>
             </div>
-          </CollapsibleSection>
+          </CollapsibleSection>}
           </div>
         </div>
       ) : null}

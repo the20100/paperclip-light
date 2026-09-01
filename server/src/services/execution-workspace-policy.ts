@@ -153,6 +153,12 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.authorizationPolicy && typeof parsed.authorizationPolicy === "object" && !Array.isArray(parsed.authorizationPolicy)
       ? { authorizationPolicy: { ...(parsed.authorizationPolicy as Record<string, unknown>) } }
       : {}),
+    ...(parsed.lightRepository && typeof parsed.lightRepository === "object" && !Array.isArray(parsed.lightRepository)
+      ? { lightRepository: { ...(parsed.lightRepository as Record<string, unknown>) } as ProjectExecutionWorkspacePolicy["lightRepository"] }
+      : {}),
+    ...(parsed.lightContextDocuments && typeof parsed.lightContextDocuments === "object" && !Array.isArray(parsed.lightContextDocuments)
+      ? { lightContextDocuments: { ...(parsed.lightContextDocuments as Record<string, unknown>) } as ProjectExecutionWorkspacePolicy["lightContextDocuments"] }
+      : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import type { TrustAuthorizationPolicy } from "../trust-policy.js";
 import type { RuntimeExposureStatus } from "./runtime-exposure.js";
+import type { LightRepositoryPolicy } from "../validators/light-execution.js";
 
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
@@ -178,6 +179,8 @@ export interface ProjectExecutionWorkspacePolicy {
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
   authorizationPolicy?: TrustAuthorizationPolicy | null;
+  lightRepository?: LightRepositoryPolicy | null;
+  lightContextDocuments?: { paths: string[]; tokenBudget: number } | null;
 }
 
 export interface IssueExecutionWorkspaceSettings {

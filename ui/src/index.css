@@ -9,6 +9,35 @@
   font-weight: 100 900;
 }
 
+.workbench-surface {
+  height: var(--sz-workbench-surface-mobile);
+  min-height: var(--sz-workbench-min);
+}
+
+.workbench-surface-project {
+  height: var(--sz-workbench-project-mobile);
+}
+
+.workbench-files-grid {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(12rem, 2fr) minmax(16rem, 3fr);
+}
+
+@media (min-width: 64rem) {
+  .workbench-surface {
+    height: var(--sz-workbench-surface);
+  }
+
+  .workbench-surface-project {
+    height: var(--sz-workbench-project);
+  }
+
+  .workbench-files-grid {
+    grid-template-columns: minmax(18rem, 2fr) minmax(22rem, 3fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
 @font-face {
   font-family: "InterVariable";
   src: url("../fonts/InterVariable-Italic.woff2") format("woff2");
@@ -192,6 +221,16 @@
   --gtc-folder-row: 1rem minmax(0, 1fr) auto;
   --gtc-folder-row-actions: 1rem minmax(0, 1fr) auto auto;
   --sz-folder-rail: 13.25rem;
+  --sz-workbench-surface: calc(100dvh - 11rem);
+  --sz-workbench-surface-mobile: calc(100dvh - 14rem - env(safe-area-inset-bottom));
+  --sz-workbench-project: calc(100dvh - 16rem);
+  --sz-workbench-project-mobile: calc(100dvh - 16rem - env(safe-area-inset-bottom));
+  --sz-workbench-min: 32rem;
+  --grid-workbench-file-row: minmax(0, 1fr) 4.5rem 6.5rem 2rem;
+  --workbench-terminal-background: rgb(10 10 10);
+  --workbench-terminal-foreground: rgb(245 245 245);
+  --workbench-terminal-cursor: rgb(34 211 238);
+  --workbench-terminal-selection: rgb(37 99 235 / 0.33);
   --sz-folder-sheet-max: 80dvh;
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 

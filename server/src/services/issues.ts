@@ -63,6 +63,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isUuidLike,
+  lightCompanyConfigSchema,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -132,7 +133,7 @@ import {
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
-const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "paused", "blocked", "failed", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -240,6 +241,12 @@ function applyStatusSideEffects(
   }
   if (status === "cancelled") {
     patch.cancelledAt = new Date();
+  }
+  if (status === "paused") {
+    patch.pausedAt = new Date();
+  }
+  if (status === "failed") {
+    patch.failedAt = new Date();
   }
   return patch;
 }
@@ -1917,9 +1924,9 @@ const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execut
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
-const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
+const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "failed", "cancelled"];
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
+const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "failed", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
   "issue.productivity_review_created",
   "issue.productivity_review_updated",
@@ -1962,7 +1969,7 @@ function lowTrustBoundaryIssueCondition(
   return or(...clauses);
 }
 
-const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
+const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "failed", "cancelled"];
 export const BLOCKER_ATTENTION_MAX_DEPTH = 8;
 export const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
@@ -3070,7 +3077,7 @@ async function listIssueReviewAttentionMap(
         eq(issues.companyId, companyId),
         inArray(issues.originKind, [RECOVERY_ORIGIN_KINDS.strandedIssueRecovery, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation]),
         visibleIssueCondition(),
-        notInArray(issues.status, ["done", "cancelled"]),
+        notInArray(issues.status, ["done", "failed", "cancelled"]),
       )),
   ]);
 
@@ -3280,6 +3287,10 @@ const issueListSelect = {
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
   blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
+  pauseReason: issues.pauseReason,
+  pausedAt: issues.pausedAt,
+  failureReason: issues.failureReason,
+  failedAt: issues.failedAt,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -3480,7 +3491,7 @@ async function blockedByMapForIssues(
   return map;
 }
 
-const BLOCKED_INBOX_TERMINAL_STATUSES = ["done", "cancelled"] as const;
+const BLOCKED_INBOX_TERMINAL_STATUSES = ["done", "failed", "cancelled"] as const;
 const BLOCKED_INBOX_ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES;
 const BLOCKED_INBOX_PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -6685,7 +6696,7 @@ export function issueService(db: Db) {
         .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId)))
         .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
       if (children.length === 0) return null;
-      if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {
+      if (!children.every((child) => child.status === "done" || child.status === "failed" || child.status === "cancelled")) {
         return null;
       }
 
@@ -7168,7 +7179,7 @@ export function issueService(db: Db) {
               eq(issues.companyId, companyId),
               issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
               isNull(issues.hiddenAt),
-              notInArray(issues.status, ["done", "cancelled"]),
+              notInArray(issues.status, ["done", "failed", "cancelled"]),
               gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
               sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
             ))
@@ -7187,6 +7198,83 @@ export function issueService(db: Db) {
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;
+        }
+
+        const companyExecution = await tx
+          .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => rows[0] ?? null);
+        if (!companyExecution) throw notFound("Company not found");
+        if (companyExecution.executionProfile === "light" && issueData.parentId) {
+          const parsedLightConfig = lightCompanyConfigSchema.safeParse(companyExecution.lightConfig ?? {});
+          if (!parsedLightConfig.success) {
+            throw unprocessable("Company Light execution settings are invalid");
+          }
+          const lightConfig = parsedLightConfig.data;
+          let cursor: string | null = issueData.parentId;
+          let rootTaskId = issueData.parentId;
+          let depthBelowRoot = 0;
+          while (cursor) {
+            depthBelowRoot += 1;
+            if (depthBelowRoot > lightConfig.maxTaskDepth) {
+              throw unprocessable(
+                `Task tree exceeds the configured maximum depth of ${lightConfig.maxTaskDepth}`,
+                { code: "light_max_task_depth_reached" },
+              );
+            }
+            const parentRow: { parentId: string | null } | null = await tx
+              .select({ parentId: issues.parentId })
+              .from(issues)
+              .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor)))
+              .then((rows) => rows[0] ?? null);
+            if (!parentRow) throw notFound("Parent task not found");
+            rootTaskId = cursor;
+            cursor = parentRow.parentId;
+          }
+
+          // Serialize every creation in the same tree, not just siblings under
+          // one parent. This keeps both the direct-child and total-tree limits
+          // exact when agents create subtasks concurrently on different limbs.
+          const treeGuardKey = `issue-tree:${companyId}:${rootTaskId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${treeGuardKey}, 0))`);
+
+          const [{ childCount }] = await tx
+            .select({ childCount: sql<number>`count(*)::int` })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), eq(issues.parentId, issueData.parentId)));
+          if (Number(childCount ?? 0) >= lightConfig.maxChildrenPerTask) {
+            throw unprocessable(
+              `Parent task already has the configured maximum of ${lightConfig.maxChildrenPerTask} child tasks`,
+              { code: "light_max_children_reached" },
+            );
+          }
+
+          const treeRows = await tx.execute(sql`
+            WITH RECURSIVE task_tree(id) AS (
+              SELECT ${issues.id}
+              FROM ${issues}
+              WHERE ${issues.companyId} = ${companyId}
+                AND ${issues.id} = ${rootTaskId}
+              UNION
+              SELECT child.id
+              FROM ${issues} child
+              JOIN task_tree ON child.parent_id = task_tree.id
+              WHERE child.company_id = ${companyId}
+            )
+            SELECT count(*)::int AS "taskCount" FROM task_tree
+          `);
+          const currentTaskCount = Number(
+            Array.isArray(treeRows) && treeRows[0] && typeof treeRows[0] === "object"
+              ? (treeRows[0] as Record<string, unknown>).taskCount ?? 0
+              : 0,
+          );
+          if (currentTaskCount >= lightConfig.maxTasksPerTree) {
+            throw unprocessable(
+              `Task tree already has the configured maximum of ${lightConfig.maxTasksPerTree} tasks`,
+              { code: "light_max_tasks_per_tree_reached" },
+            );
+          }
         }
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
@@ -7371,6 +7459,12 @@ export function issueService(db: Db) {
         }
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
+        }
+        if (values.status === "paused") {
+          values.pausedAt = new Date();
+        }
+        if (values.status === "failed") {
+          values.failedAt = new Date();
         }
         Object.assign(
           values,
@@ -7845,6 +7939,14 @@ export function issueService(db: Db) {
       if (issueData.status && issueData.status !== "cancelled") {
         patch.cancelledAt = null;
       }
+      if (issueData.status && issueData.status !== "paused") {
+        patch.pauseReason = null;
+        patch.pausedAt = null;
+      }
+      if (issueData.status && issueData.status !== "failed") {
+        patch.failureReason = null;
+        patch.failedAt = null;
+      }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
@@ -7908,8 +8010,9 @@ export function issueService(db: Db) {
         if (!updated) return null;
         if (existing.status !== updated.status) {
           if (
-            (existing.status === "done" || existing.status === "cancelled")
+            (existing.status === "done" || existing.status === "failed" || existing.status === "cancelled")
             && updated.status !== "done"
+            && updated.status !== "failed"
             && updated.status !== "cancelled"
           ) {
             const terminalWorkspaces = await tx
@@ -7939,7 +8042,7 @@ export function issueService(db: Db) {
               });
             }
           }
-          if (updated.status === "done" || updated.status === "cancelled") {
+          if (updated.status === "done" || updated.status === "failed" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
@@ -8005,6 +8108,7 @@ export function issueService(db: Db) {
           // stops spinning and offers "Run now" again (blocked = stuck on a human).
           if (
             updated.status === "done" ||
+            updated.status === "failed" ||
             updated.status === "cancelled" ||
             updated.status === "blocked"
           ) {
@@ -8084,7 +8188,7 @@ export function issueService(db: Db) {
           },
         );
         if (
-          (issueData.status === "done" || issueData.status === "cancelled") &&
+          (issueData.status === "done" || issueData.status === "failed" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
           existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
         ) {

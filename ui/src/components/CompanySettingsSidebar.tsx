@@ -12,6 +12,7 @@ import {
   Upload,
   UserRoundPen,
   Users,
+  Zap,
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
@@ -99,6 +100,9 @@ export function CompanySettingsSidebar() {
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          {selectedCompany?.executionProfile === "light" && (
+            <SidebarNavItem to="/company/settings/light" label="Light execution" icon={Zap} end />
+          )}
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}

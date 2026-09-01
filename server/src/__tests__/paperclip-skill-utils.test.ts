@@ -64,6 +64,19 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("keeps the Light operational skill compact and CLI-first", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip-light/SKILL.md"), "utf8");
+    const wordCount = skillBody.trim().split(/\s+/).length;
+    const lineCount = skillBody.split("\n").length;
+
+    expect(wordCount).toBeLessThanOrEqual(250);
+    expect(lineCount).toBeLessThanOrEqual(70);
+    expect(skillBody).toContain("pc task show");
+    expect(skillBody).toContain("pc files reserve");
+    expect(skillBody).toContain("pc repo commit");
+    expect(skillBody).not.toContain("curl ");
+  });
+
   it("documents governed agent interaction resolution invariants", async () => {
     const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
     const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");

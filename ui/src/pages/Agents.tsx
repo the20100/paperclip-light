@@ -189,7 +189,7 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
 }
 
 export function Agents() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -455,6 +455,7 @@ export function Agents() {
                   agent={agent}
                   companyId={selectedCompanyId}
                   runLabel="Run Heartbeat"
+                  showRunAction={selectedCompany?.executionProfile !== "light"}
                   showStatus={false}
                 />
               </div>

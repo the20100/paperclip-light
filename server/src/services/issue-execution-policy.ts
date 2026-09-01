@@ -686,7 +686,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (
-    (input.issue.status === "done" || input.issue.status === "cancelled") &&
+    (input.issue.status === "done" || input.issue.status === "failed" || input.issue.status === "cancelled") &&
     requestedStatus &&
     requestedStatus !== "done" &&
     requestedStatus !== "cancelled"

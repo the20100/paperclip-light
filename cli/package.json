@@ -4,7 +4,8 @@
   "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
-    "paperclipai": "./dist/index.js"
+    "paperclipai": "./dist/index.js",
+    "pc": "./dist/index.js"
   },
   "keywords": [
     "paperclip",
@@ -36,6 +37,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.70.0",
+    "@agentclientprotocol/codex-acp": "^1.6.2",
+    "@anthropic-ai/sdk": "0.121.0",
     "@clack/prompts": "^1.7.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -56,7 +60,10 @@
     "dotenv": "^17.4.2",
     "commander": "^15.0.0",
     "embedded-postgres": "^18.1.0-beta.16",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "postgres": "^3.4.9",
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

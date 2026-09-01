@@ -98,7 +98,7 @@ export async function collectDispositionRepairSourceState(
             eq(issueRelations.companyId, issue.companyId),
             eq(issueRelations.relatedIssueId, issue.id),
             eq(issueRelations.type, "blocks"),
-            notInArray(issues.status, ["done", "cancelled"]),
+            notInArray(issues.status, ["done", "failed", "cancelled"]),
             sql`${issues.hiddenAt} is null`,
           ),
         ),
@@ -109,7 +109,7 @@ export async function collectDispositionRepairSourceState(
           and(
             eq(issues.companyId, issue.companyId),
             eq(issues.parentId, issue.id),
-            notInArray(issues.status, ["done", "cancelled"]),
+            notInArray(issues.status, ["done", "failed", "cancelled"]),
             sql`${issues.hiddenAt} is null`,
           ),
         ),

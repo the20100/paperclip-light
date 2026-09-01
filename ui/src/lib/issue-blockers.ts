@@ -11,7 +11,7 @@ export function classifyWaitingBlocker(
   blocker: IssueRelationIssueSummary,
   liveIssueIds: ReadonlySet<string>,
 ): WaitingBlockerStatus {
-  if (blocker.status === "done" || blocker.status === "cancelled") return "done";
+  if (blocker.status === "done" || blocker.status === "failed" || blocker.status === "cancelled") return "done";
   if (liveIssueIds.has(blocker.id)) return "running";
   return "queued";
 }

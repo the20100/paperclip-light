@@ -131,7 +131,7 @@ const MISSING_LIVENESS_COPY: LivenessCopy = {
   description: "This run has no persisted liveness classification.",
 };
 
-const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
+const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "failed", "cancelled"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
 
 type RunOutputSilenceLevel = NonNullable<ActiveRunForIssue["outputSilence"]>["level"];

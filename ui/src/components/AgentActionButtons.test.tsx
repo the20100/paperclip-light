@@ -177,6 +177,15 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
+  it("hides task-less manual runs for event-driven profiles", async () => {
+    render(makeAgent({ status: "active" }), { showRunAction: false });
+    await flushReact();
+
+    expect(container.textContent).toContain("Assign Task");
+    expect(container.textContent).toContain("Pause");
+    expect(container.textContent).not.toContain("Run Heartbeat");
+  });
+
   it("calls the terminate success handler after terminating an agent", async () => {
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });

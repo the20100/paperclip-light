@@ -1018,6 +1018,121 @@ async function writeManagedCodexSkillsManifest(skillsHome: string, skillNames: I
   );
 }
 
+const CODEX_LIGHT_SKILL_SCAN_MAX_DEPTH = 12;
+const CODEX_LIGHT_SKILL_SCAN_SKIP_DIRS = new Set([
+  ".git",
+  "build",
+  "dist",
+  "node_modules",
+  "target",
+]);
+
+async function discoverCodexSkillDirs(root: string): Promise<string[]> {
+  const discovered = new Set<string>();
+  const seen = new Set<string>();
+
+  const walk = async (candidate: string, depth: number): Promise<void> => {
+    if (depth > CODEX_LIGHT_SKILL_SCAN_MAX_DEPTH) return;
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (!stat?.isDirectory()) return;
+    const real = await fs.realpath(candidate).catch(() => path.resolve(candidate));
+    if (seen.has(real)) return;
+    seen.add(real);
+
+    const entries = await fs.readdir(candidate, { withFileTypes: true }).catch(() => []);
+    if (entries.some((entry) => entry.name === "SKILL.md" && (entry.isFile() || entry.isSymbolicLink()))) {
+      discovered.add(path.resolve(candidate));
+      return;
+    }
+
+    await Promise.all(entries.map(async (entry) => {
+      if (CODEX_LIGHT_SKILL_SCAN_SKIP_DIRS.has(entry.name)) return;
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) return;
+      await walk(path.join(candidate, entry.name), depth + 1);
+    }));
+  };
+
+  await walk(root, 0);
+  return Array.from(discovered).sort();
+}
+
+function codexProjectSkillRoots(cwd: string): string[] {
+  const roots: string[] = [];
+  let cursor = path.resolve(cwd);
+  while (true) {
+    roots.push(path.join(cursor, ".agents", "skills"));
+    roots.push(path.join(cursor, ".codex", "skills"));
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return roots;
+}
+
+async function applyCodexLightSkillAllowlist(input: {
+  cwd: string;
+  codexHome: string;
+  env: Record<string, string>;
+  selectedSkillDirs: string[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<{ disabledCount: number; policyKey: string }> {
+  const homeDir = input.env.HOME?.trim() || os.homedir();
+  const discoveryRoots = Array.from(new Set([
+    path.join(input.codexHome, "skills"),
+    path.join(input.codexHome, "plugins", "cache"),
+    path.join(homeDir, ".agents", "skills"),
+    ...codexProjectSkillRoots(input.cwd),
+  ]));
+  const discovered = Array.from(new Set((await Promise.all(
+    discoveryRoots.map((root) => discoverCodexSkillDirs(root)),
+  )).flat())).sort();
+  const selected = new Set(input.selectedSkillDirs.map((entry) => path.resolve(entry)));
+  const generated = discovered.map((skillPath) => ({
+    path: skillPath,
+    enabled: selected.has(skillPath),
+  }));
+
+  let existing: Record<string, unknown> = {};
+  if (input.env.CODEX_CONFIG) {
+    try {
+      existing = parseObject(JSON.parse(input.env.CODEX_CONFIG));
+    } catch {
+      await input.onLog(
+        "stderr",
+        "[paperclip] Ignoring invalid user CODEX_CONFIG while applying the Paperclip Light skill allowlist; expected a JSON object.\n",
+      );
+    }
+  }
+  const existingSkills = parseObject(existing.skills);
+  const generatedPaths = new Set(generated.map((entry) => entry.path));
+  const preservedOverrides = Array.isArray(existingSkills.config)
+    ? existingSkills.config.filter((raw) => {
+        const entry = parseObject(raw);
+        const skillPath = asString(entry.path, "").trim();
+        return !skillPath || !generatedPaths.has(path.resolve(skillPath));
+      })
+    : [];
+  const config = [...preservedOverrides, ...generated];
+  input.env.CODEX_CONFIG = JSON.stringify({
+    ...existing,
+    skills: {
+      ...existingSkills,
+      config,
+    },
+  });
+
+  const disabledCount = generated.filter((entry) => !entry.enabled).length;
+  const policyKey = createHash("sha256")
+    .update(JSON.stringify(generated))
+    .digest("hex")
+    .slice(0, 16);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Paperclip Light Codex skill allowlist enabled ${generated.length - disabledCount} selected skill(s) and disabled ${disabledCount} ambient skill(s).\n`,
+  );
+  return { disabledCount, policyKey };
+}
+
 async function removeSkillTarget(target: string): Promise<boolean> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) return false;
@@ -1068,6 +1183,7 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  cwd: string;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
   // Step-timing seam: threaded from `buildRuntime` so the nested
@@ -1146,6 +1262,16 @@ async function prepareCodexSkillRuntime(input: {
 
   input.env.CODEX_HOME = effectiveCodexHome;
 
+  const lightSkillPolicy = input.config.paperclipExecutionMode === "light"
+    ? await applyCodexLightSkillAllowlist({
+        cwd: input.cwd,
+        codexHome: effectiveCodexHome,
+        env: input.env,
+        selectedSkillDirs: selectedSkills.map((entry) => path.join(skillsHome, entry.runtimeName)),
+        onLog: input.onLog,
+      })
+    : null;
+
   return {
     identity: {
       mode: "codex",
@@ -1154,6 +1280,12 @@ async function prepareCodexSkillRuntime(input: {
       selectedSkills: selectedSkills.map((entry) => entry.runtimeName).sort(),
       codexHome: effectiveCodexHome,
       skillsHome,
+      ...(lightSkillPolicy
+        ? {
+            ambientSkillsDisabled: lightSkillPolicy.disabledCount,
+            lightSkillPolicyKey: lightSkillPolicy.policyKey,
+          }
+        : {}),
     },
     commandNotes: [`Prepared ACPX Codex skill home at ${skillsHome}.`],
   };
@@ -1845,6 +1977,7 @@ async function buildRuntime(input: {
         companyId: agent.companyId,
         config,
         env,
+        cwd,
         moduleDir: input.engine.moduleDir,
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,

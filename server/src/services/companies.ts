@@ -147,6 +147,8 @@ export function companyService(db: Db) {
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
+    executionProfile: companies.executionProfile,
+    lightConfig: companies.lightConfig,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,

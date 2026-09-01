@@ -23,6 +23,9 @@ import {
   MessagesSquare,
   GanttChartSquare,
   LayoutGrid,
+  ShieldCheck,
+  Files,
+  SquareTerminal,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -225,6 +228,9 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
+          {selectedCompany?.executionProfile === "light" ? (
+            <SidebarNavItem to="/actions" label="Action Center" icon={ShieldCheck} />
+          ) : null}
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           {showCases ? (
             <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
@@ -243,6 +249,8 @@ export function Sidebar() {
             />
           ) : null}
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
+          <SidebarNavItem to="/files" label="Files" icon={Files} />
+          <SidebarNavItem to="/terminal" label="Terminal" icon={SquareTerminal} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />

@@ -317,7 +317,7 @@ function RoutineSectionHeader({
 }
 
 export function Routines() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -339,6 +339,15 @@ export function Routines() {
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const lightRoutineDefaults = selectedCompany?.executionProfile === "light"
+    ? {
+        concurrencyPolicy: selectedCompany.lightConfig?.routineConcurrencyPolicy ?? "skip_if_active",
+        catchUpPolicy: selectedCompany.lightConfig?.routineCatchUpPolicy ?? "skip_missed",
+      }
+    : {
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      };
   const activeTab: RoutinesTab = searchParams.get("tab") === "runs" ? "runs" : "routines";
   const [draft, setDraft] = useState<{
     title: string;
@@ -357,8 +366,8 @@ export function Routines() {
     folderId: null,
     assigneeAgentId: "",
     priority: "medium",
-    concurrencyPolicy: "coalesce_if_active",
-    catchUpPolicy: "skip_missed",
+    concurrencyPolicy: lightRoutineDefaults.concurrencyPolicy,
+    catchUpPolicy: lightRoutineDefaults.catchUpPolicy,
     variables: [],
   });
   const routineViewStateKey = selectedCompanyId
@@ -374,6 +383,20 @@ export function Routines() {
   useEffect(() => {
     setRoutineViewState(getRoutineViewState(routineViewStateKey));
   }, [routineViewStateKey]);
+
+  useEffect(() => {
+    if (composerOpen) return;
+    setDraft((current) => ({
+      ...current,
+      concurrencyPolicy: lightRoutineDefaults.concurrencyPolicy,
+      catchUpPolicy: lightRoutineDefaults.catchUpPolicy,
+    }));
+  }, [
+    composerOpen,
+    lightRoutineDefaults.catchUpPolicy,
+    lightRoutineDefaults.concurrencyPolicy,
+    selectedCompanyId,
+  ]);
 
   const { data: routines, isLoading, error } = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
@@ -446,8 +469,8 @@ export function Routines() {
         folderId: null,
         assigneeAgentId: "",
         priority: "medium",
-        concurrencyPolicy: "coalesce_if_active",
-        catchUpPolicy: "skip_missed",
+        concurrencyPolicy: lightRoutineDefaults.concurrencyPolicy,
+        catchUpPolicy: lightRoutineDefaults.catchUpPolicy,
         variables: [],
       });
       setComposerOpen(false);

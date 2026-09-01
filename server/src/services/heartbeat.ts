@@ -11,12 +11,14 @@ import {
   CONNECTION_RUNTIME_TOOL_NAMES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  lightCompanyConfigSchema,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type CostStatus,
+  type LightCompanyConfig,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -165,6 +167,7 @@ import {
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { lightControlService, selectProjectMemoryItems } from "./light-control.js";
 import { getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -200,6 +203,7 @@ import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
+  installPaperclipLightCli,
   prepareHeartbeatRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
@@ -295,6 +299,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
+  selectPaperclipTaskMarkdown,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
@@ -3407,6 +3412,62 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function usesLightExecutionProfile(
+  companyExecutionProfile: string | null | undefined,
+  runtimeConfig: unknown,
+): boolean {
+  const agentOverride = readNonEmptyString(parseObject(runtimeConfig).executionMode);
+  return agentOverride === "light"
+    || (agentOverride !== "standard" && companyExecutionProfile === "light");
+}
+
+function truncateLightContextText(value: unknown, maxChars: number, fetchHint: string): unknown {
+  if (typeof value !== "string" || value.length <= maxChars) return value;
+  const safeMax = Math.max(512, maxChars);
+  const tailChars = Math.min(Math.floor(safeMax * 0.2), 4_000);
+  const marker = `\n\n[Paperclip Light truncated this context to protect the token budget. ${fetchHint}]\n\n`;
+  const headChars = Math.max(256, safeMax - tailChars - marker.length);
+  return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
+}
+
+async function loadLightProjectContextDocuments(input: {
+  cwd: string;
+  paths: string[];
+  tokenBudget: number;
+}) {
+  const root = await fs.realpath(input.cwd);
+  const sections: string[] = [];
+  const loaded: Array<{ path: string; sha256: string; chars: number }> = [];
+  const seen = new Set<string>();
+  let remainingChars = Math.max(0, input.tokenBudget * 4);
+  for (const rawPath of input.paths) {
+    const normalized = rawPath.trim().replaceAll("\\", "/");
+    if (!normalized || path.posix.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) {
+      continue;
+    }
+    const candidate = await fs.realpath(path.join(root, normalized)).catch(() => null);
+    if (!candidate || seen.has(candidate)) continue;
+    const relative = path.relative(root, candidate);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    const stat = await fs.stat(candidate).catch(() => null);
+    if (!stat?.isFile() || stat.size > 512 * 1024 || remainingChars <= 0) continue;
+    const content = await fs.readFile(candidate, "utf8").catch(() => null);
+    if (content == null) continue;
+    const heading = `## Project document: ${relative.replaceAll(path.sep, "/")}\n`;
+    const body = content.slice(0, Math.max(0, remainingChars - heading.length));
+    if (!body) continue;
+    sections.push(`${heading}${body}`);
+    loaded.push({
+      path: relative.replaceAll(path.sep, "/"),
+      sha256: createHash("sha256").update(content).digest("hex"),
+      chars: body.length,
+    });
+    remainingChars -= heading.length + body.length;
+    seen.add(candidate);
+  }
+  return { text: sections.join("\n\n"), loaded };
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -4077,11 +4138,13 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
 
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
+  billingType?: BillingType;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
 }): CostStatus {
   const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
+  if (input.billingType === "subscription_included") return "reported";
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
@@ -5446,6 +5509,149 @@ function readConfiguredModelFromAdapterConfig(
   adapterConfig: Record<string, unknown> | null | undefined,
 ) {
   return readNonEmptyString(adapterConfig?.model);
+}
+
+type LightModelCandidate = {
+  model: string;
+  provider?: string;
+  capabilities: string[];
+  qualityScore?: number;
+  health?: "unknown" | "available" | "degraded" | "unavailable";
+  healthReason?: string | null;
+  lastCheckedAt?: Date | null;
+  contextWindowTokens?: number | null;
+  maxOutputTokens?: number | null;
+  inputPricePerMillion?: number | null;
+  outputPricePerMillion?: number | null;
+  executionLocation?: "local" | "remote";
+  supportsSessionResume?: boolean;
+};
+
+export function resolveLightModelForRun(input: {
+  agentRuntimeConfig: unknown;
+  baseConfig: Record<string, unknown>;
+  contextSnapshot: Record<string, unknown>;
+  companyConfig?: LightCompanyConfig | null;
+  now?: Date;
+}) {
+  const routing = parseObject(parseObject(input.agentRuntimeConfig).lightRouting);
+  const mode = routing.mode === "auto" ? "auto" : "fixed";
+  const fallbackEnabled = routing.fallbackEnabled !== false;
+  const onUnavailable = routing.onUnavailable === "pause" ? "pause" : "fallback";
+  const requiredCapabilities = Array.isArray(routing.requiredCapabilities)
+    ? routing.requiredCapabilities.filter((value): value is string => typeof value === "string")
+    : [];
+  const registry = input.companyConfig?.modelRegistry ?? [];
+  const registryByModel = new Map(registry.flatMap((profile) => [
+    [profile.modelId, profile],
+    [`${profile.provider}/${profile.modelId}`, profile],
+  ]));
+  const fromProfile = (model: string, declaredCapabilities: string[] = []): LightModelCandidate => {
+    const profile = registryByModel.get(model);
+    if (!profile) return { model, capabilities: declaredCapabilities };
+    return {
+      model: profile.modelId,
+      provider: profile.provider,
+      capabilities: [...new Set([
+        ...profile.capabilities,
+        ...(profile.supportsTools ? ["tools"] : []),
+        ...(profile.supportsStructuredOutput ? ["structured_output"] : []),
+        ...(profile.supportsVision ? ["vision"] : []),
+      ])],
+      qualityScore: profile.qualityScore,
+      health: profile.health,
+      healthReason: profile.healthReason,
+      lastCheckedAt: profile.lastCheckedAt,
+      contextWindowTokens: profile.contextWindowTokens,
+      maxOutputTokens: profile.maxOutputTokens,
+      inputPricePerMillion: profile.inputPricePerMillion,
+      outputPricePerMillion: profile.outputPricePerMillion,
+      executionLocation: profile.executionLocation,
+      supportsSessionResume: profile.supportsSessionResume,
+    };
+  };
+  const candidates: LightModelCandidate[] = [];
+  const primaryModel = readNonEmptyString(routing.primaryModel) ?? readConfiguredModelFromAdapterConfig(input.baseConfig);
+  if (mode === "auto" && registry.length > 0) {
+    for (const profile of registry) {
+      if (profile.enabled) candidates.push(fromProfile(`${profile.provider}/${profile.modelId}`));
+    }
+  } else if (primaryModel) {
+    candidates.push(fromProfile(primaryModel, requiredCapabilities));
+  }
+  if (fallbackEnabled && Array.isArray(routing.fallbackModels)) {
+    for (const raw of routing.fallbackModels) {
+      const candidate = parseObject(raw);
+      const model = readNonEmptyString(candidate.model);
+      if (!model) continue;
+      const capabilities = Array.isArray(candidate.capabilities)
+        ? candidate.capabilities.filter((value): value is string => typeof value === "string")
+        : [];
+      const resolved = fromProfile(model, capabilities);
+      if (!candidates.some((existing) => existing.model === resolved.model && existing.provider === resolved.provider)) {
+        candidates.push(resolved);
+      }
+    }
+  }
+  const now = input.now ?? new Date();
+  const healthTtlMs = (input.companyConfig?.providerHealthTtlSeconds ?? 300) * 1_000;
+  const estimatedInputTokens = Math.ceil(JSON.stringify(input.contextSnapshot).length / 4);
+  const requestedOutputTokens = typeof routing.maxOutputTokens === "number" ? routing.maxOutputTokens : 0;
+  const maxInputPrice = typeof routing.maxInputPricePerMillion === "number" ? routing.maxInputPricePerMillion : null;
+  const maxOutputPrice = typeof routing.maxOutputPricePerMillion === "number" ? routing.maxOutputPricePerMillion : null;
+  const inspected = candidates.map((candidate, originalIndex) => {
+    const healthIsStale = Boolean(candidate.lastCheckedAt && now.getTime() - candidate.lastCheckedAt.getTime() > healthTtlMs);
+    const reasons: string[] = [];
+    if (requiredCapabilities.some((required) => !candidate.capabilities.includes(required))) reasons.push("missing_capability");
+    if (candidate.health === "unavailable" && !healthIsStale) reasons.push("provider_unavailable");
+    if (candidate.contextWindowTokens && estimatedInputTokens + requestedOutputTokens > candidate.contextWindowTokens) reasons.push("context_window_too_small");
+    if (candidate.maxOutputTokens && requestedOutputTokens > candidate.maxOutputTokens) reasons.push("output_limit_too_small");
+    if (maxInputPrice != null && candidate.inputPricePerMillion != null && candidate.inputPricePerMillion > maxInputPrice) reasons.push("input_price_cap");
+    if (maxOutputPrice != null && candidate.outputPricePerMillion != null && candidate.outputPricePerMillion > maxOutputPrice) reasons.push("output_price_cap");
+    const pricePenalty = (candidate.inputPricePerMillion ?? 0) * 0.5 + (candidate.outputPricePerMillion ?? 0) * 0.25;
+    const score = (candidate.qualityScore ?? 50) * 2
+      - pricePenalty
+      + (candidate.executionLocation === "local" ? 10 : 0)
+      + (candidate.supportsSessionResume ? 5 : 0)
+      - (candidate.health === "degraded" && !healthIsStale ? 30 : 0)
+      - (candidate.health === "unknown" || healthIsStale ? 5 : 0)
+      - originalIndex / 100;
+    return { candidate, originalIndex, eligible: reasons.length === 0, reasons, score, healthIsStale };
+  });
+  const eligible = inspected.filter((entry) => entry.eligible);
+  if (mode === "auto") eligible.sort((left, right) => right.score - left.score || left.originalIndex - right.originalIndex);
+  const rawIndex = typeof input.contextSnapshot.lightFallbackIndex === "number"
+    ? Math.floor(input.contextSnapshot.lightFallbackIndex)
+    : 0;
+  const selectedIndex = Math.min(Math.max(0, rawIndex), Math.max(0, eligible.length - 1));
+  const selectedEntry = eligible[selectedIndex] ?? null;
+  const selected = selectedEntry?.candidate ?? null;
+  return {
+    config: selected ? { ...input.baseConfig, model: selected.model } : input.baseConfig,
+    shouldPause: !selected && onUnavailable === "pause",
+    metadata: {
+      mode,
+      selectedModel: selected?.model ?? readConfiguredModelFromAdapterConfig(input.baseConfig),
+      selectedProvider: selected?.provider ?? null,
+      selectedIndex,
+      candidateCount: eligible.length,
+      inspectedCandidateCount: inspected.length,
+      fallbackEnabled,
+      onUnavailable,
+      requiredCapabilities,
+      estimatedInputTokens,
+      decision: selected ? "selected" : onUnavailable === "pause" ? "pause" : "use_adapter_default",
+      inspected: inspected.map((entry) => ({
+        model: entry.candidate.model,
+        provider: entry.candidate.provider ?? null,
+        eligible: entry.eligible,
+        reasons: entry.reasons,
+        score: Math.round(entry.score * 100) / 100,
+        health: entry.candidate.health ?? "unknown",
+        healthIsStale: entry.healthIsStale,
+      })),
+    },
+  };
 }
 
 function attachPaperclipSessionMetadataToSessionParams(
@@ -7966,7 +8172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.strandedIssueRecovery),
           eq(issues.originId, claimed.id),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       )
       .orderBy(desc(issues.createdAt))
@@ -8610,6 +8816,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     sessionId: string | null;
     issueId: string | null;
     continuationSummaryBody?: string | null;
+    policyOverride?: SessionCompactionPolicy | null;
   }): Promise<SessionCompactionDecision> {
     const { agent, sessionId, issueId } = input;
     if (!sessionId) {
@@ -8621,7 +8828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const policy = parseSessionCompactionPolicy(agent);
+    const policy = input.policyOverride ?? parseSessionCompactionPolicy(agent);
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
@@ -9803,7 +10010,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ]),
               eq(issues.originId, issue.id),
               visibleIssueCondition(),
-              notInArray(issues.status, ["done", "cancelled"]),
+              notInArray(issues.status, ["done", "failed", "cancelled"]),
             ),
           )
           .limit(1)
@@ -11259,7 +11466,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.status === "cancelled" || issue.status === "done") {
+    if (issue.status === "cancelled" || issue.status === "failed" || issue.status === "done") {
       return {
         allowed: false,
         reason: `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
@@ -11545,7 +11752,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const maxAttempts = Math.max(
+      0,
+      Math.floor(
+        opts?.maxAttempts
+          ?? await configuredTechnicalRetryLimit(run.companyId, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+      ),
+    );
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -11572,6 +11785,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retryLightRouting = parseObject(parseObject(agent.runtimeConfig).lightRouting);
+
+    if (transientRecovery?.errorFamily === "provider_quota" && retryLightRouting.onUnavailable === "pause") {
+      if (issueId) {
+        await issuesSvc.update(issueId, {
+          status: "paused",
+          pauseReason: "provider_unavailable: configured Light routing policy is pause",
+        }).catch(() => {});
+      }
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Automatic retry paused because the configured Light model policy does not allow fallback",
+        payload: { retryReason, providerUnavailable: true, routingPolicy: "pause" },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Provider unavailable and Light routing policy is pause",
+        errorCode: "provider_unavailable" as const,
+        issueId,
+      };
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -11585,6 +11821,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           maxAttempts,
         },
       });
+      if (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && issueId) {
+        const failedIssue = await issuesSvc.getById(issueId).catch(() => null);
+        if (failedIssue && !["done", "failed", "cancelled"].includes(failedIssue.status)) {
+          await issuesSvc.update(issueId, {
+            status: "failed",
+            failureReason: `Technical execution failed after ${maxAttempts} automatic retries. Open the latest failed run in Action Center.`,
+          }).catch((error) => {
+            logger.warn(
+              { err: error, runId: run.id, issueId },
+              "failed to move issue to failed after technical retry exhaustion",
+            );
+          });
+        }
+      }
       if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
         await escalatePlanApprovalResumeFailureNeedsAttention({
           run,
@@ -11690,6 +11940,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
+    const lightRoutingConfig = parseObject(parseObject(agent.runtimeConfig).lightRouting);
+    const lightFallbackCount = Array.isArray(lightRoutingConfig.fallbackModels)
+      ? lightRoutingConfig.fallbackModels.length
+      : 0;
+    const lightFallbackIndex = lightRoutingConfig.fallbackEnabled !== false && lightFallbackCount > 0
+      ? Math.min(schedule.attempt, lightFallbackCount)
+      : 0;
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
@@ -11714,6 +11971,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      ...(lightFallbackIndex > 0 ? { lightFallbackIndex } : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
     const continuationRetryIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
@@ -11888,7 +12146,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             };
           }
 
-          if (lockedIssue.status === "cancelled" || lockedIssue.status === "done") {
+          if (lockedIssue.status === "cancelled" || lockedIssue.status === "failed" || lockedIssue.status === "done") {
             return {
               outcome: "not_scheduled",
               reason: `Scheduled max-turn continuation suppressed because issue reached terminal status (${lockedIssue.status})`,
@@ -11946,6 +12204,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
               : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+            ...(lightFallbackIndex > 0 ? { lightFallbackIndex } : {}),
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -12856,6 +13115,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function configuredTechnicalRetryLimit(companyId: string, fallback: number) {
+    const companyExecution = await db
+      .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    if (companyExecution?.executionProfile !== "light") return fallback;
+    const parsed = lightCompanyConfigSchema.safeParse(companyExecution.lightConfig ?? {});
+    return parsed.success ? parsed.data.technicalRetryLimit : 0;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -12952,17 +13222,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const claimed = await db.transaction(async (tx) => {
+      const companyExecution = await tx
+        .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .then((rows) => rows[0] ?? null);
+      if (companyExecution?.executionProfile === "light") {
+        const parsedLightConfig = lightCompanyConfigSchema.safeParse(companyExecution.lightConfig ?? {});
+        if (!parsedLightConfig.success) {
+          logger.error(
+            { companyId: run.companyId, runId: run.id, issues: parsedLightConfig.error.issues },
+            "claimQueuedRun: invalid Light company settings",
+          );
+          return null;
+        }
+        const capacityGuardKey = `light-company-capacity:${run.companyId}`;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${capacityGuardKey}, 0))`);
+        const [{ count }] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "running")));
+        if (Number(count ?? 0) >= parsedLightConfig.data.maxConcurrentRuns) {
+          return null;
+        }
+      }
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -13271,7 +13567,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "done" || issue.status === "cancelled") {
+    if (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") {
       if (!resumeIntent && !wakeCommentId) {
         return {
           stale: true,
@@ -14086,11 +14382,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
-      const shouldRetry = (run.processLossRetryCount ?? 0) < 1 && (
+      const processLossRetryLimit = await configuredTechnicalRetryLimit(run.companyId, 1);
+      const shouldRetry = (run.processLossRetryCount ?? 0) < processLossRetryLimit && (
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const retryMessage = `${baseMessage}; scheduling automatic retry ${
+        (run.processLossRetryCount ?? 0) + 1
+      }/${processLossRetryLimit}`;
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -14103,7 +14403,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry ? retryMessage : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
         resultJson: (() => {
@@ -14113,7 +14413,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             {
               resultJson: parseObject(run.resultJson),
               errorCode: "process_lost",
-              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+              errorMessage: shouldRetry ? retryMessage : baseMessage,
             },
           );
           return unmanagedBackgroundTaskEvidence
@@ -14300,6 +14600,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
+      billingType,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -14526,7 +14827,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
-    const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
+    const companyExecutionSettings = await db
+      .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+    const configuredAgentExecutionMode = readNonEmptyString(parseObject(agent.runtimeConfig).executionMode);
+    const lightExecutionEnabled = configuredAgentExecutionMode === "light"
+      || (configuredAgentExecutionMode !== "standard" && companyExecutionSettings?.executionProfile === "light");
+    const parsedCompanyLightConfig = lightCompanyConfigSchema.safeParse(companyExecutionSettings?.lightConfig ?? {});
+    const taskKey = lightExecutionEnabled
+      && parsedCompanyLightConfig.success
+      && !parsedCompanyLightConfig.data.taskSessionIsolation
+        ? null
+        : deriveTaskKeyWithHeartbeatFallback(context, null);
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
@@ -15121,11 +15435,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
-    const mergedConfig = mergeModelProfileAdapterConfig({
+    let mergedConfig = mergeModelProfileAdapterConfig({
       baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
+    if (lightExecutionEnabled) {
+      const companyLightConfig = lightCompanyConfigSchema.parse(companyExecutionSettings?.lightConfig ?? {});
+      const lightRouting = resolveLightModelForRun({
+        agentRuntimeConfig: agent.runtimeConfig,
+        baseConfig: mergedConfig,
+        contextSnapshot: context,
+        companyConfig: companyLightConfig,
+      });
+      mergedConfig = lightRouting.config;
+      context.paperclipLightRouting = lightRouting.metadata;
+      if (lightRouting.shouldPause && issueId) {
+        await db.update(issues).set({
+          status: "paused",
+          pauseReason: "No healthy compatible model is currently available",
+          updatedAt: new Date(),
+        }).where(eq(issues.id, issueId));
+        throw conflict("No healthy compatible model is available; the task was paused", {
+          code: "light_model_unavailable",
+          routing: lightRouting.metadata,
+        });
+      }
+    } else {
+      delete context.paperclipLightRouting;
+    }
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
@@ -15172,6 +15510,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
+    if (lightExecutionEnabled) {
+      context.paperclipExecutionMode = "light";
+      const parsedLightConfig = lightCompanyConfigSchema.safeParse(companyExecutionSettings?.lightConfig ?? {});
+      if (parsedLightConfig.success) {
+        const lightConfig = parsedLightConfig.data;
+        context.paperclipContextTokenBudget = lightConfig.contextTokenBudget;
+        context.paperclipProjectMemoryTokenBudget = lightConfig.projectMemoryTokenBudget;
+        // Approximate four characters per token and reserve half of the total
+        // context budget for agent instructions, the operational skill, tool
+        // schemas, and the model's reply. The full task remains fetchable with
+        // one cheap CLI call when truncation occurs.
+        const taskMarkdownChars = Math.max(2_000, lightConfig.contextComponentBudgets.task * 4);
+        context.paperclipTaskMarkdown = truncateLightContextText(
+          context.paperclipTaskMarkdown,
+          taskMarkdownChars,
+          "Run `pc task show $PAPERCLIP_TASK_ID` only if the omitted section is required",
+        );
+        context.paperclipTaskMarkdownCompact = truncateLightContextText(
+          context.paperclipTaskMarkdownCompact,
+          Math.max(1_000, taskMarkdownChars),
+          "Run `pc task show $PAPERCLIP_TASK_ID` only if more detail is required",
+        );
+        const wake = parseObject(context.paperclipWake);
+        const continuationSummary = parseObject(wake.continuationSummary);
+        if (typeof continuationSummary.body === "string") {
+          context.paperclipWake = {
+            ...wake,
+            continuationSummary: {
+              ...continuationSummary,
+              body: truncateLightContextText(
+                continuationSummary.body,
+                lightConfig.contextComponentBudgets.continuationSummary * 4,
+                "Read the linked project documents if older detail is required",
+              ),
+            },
+          };
+        }
+      }
+    }
+
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -15182,10 +15560,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         versionPinsEnabled: resolvedInstanceSettings.experimental.enableBetaSkills === true,
       }),
     });
+    let lightProjectMemoryText = "";
+    let lightProjectBriefText = "";
+    if (
+      lightExecutionEnabled
+      && companyExecutionSettings?.executionProfile === "light"
+      && projectContext?.id
+    ) {
+      const parsedLightConfig = lightCompanyConfigSchema.safeParse(companyExecutionSettings.lightConfig ?? {});
+      if (parsedLightConfig.success) {
+        const memoryItems = await lightControlService(db).listProjectMemory(projectContext.id);
+        const selectedMemoryItems = selectProjectMemoryItems(memoryItems, {
+          taskText: `${issueContext?.title ?? ""}\n${issueContext?.description ?? ""}`,
+          agentText: agent.name,
+          tokenBudget: Math.min(
+            parsedLightConfig.data.projectMemoryTokenBudget,
+            parsedLightConfig.data.contextComponentBudgets.projectMemory,
+          ),
+        });
+        const lines = selectedMemoryItems.map((item) => `- [${item.category}] ${item.text}`);
+        lightProjectMemoryText = lines.join("\n");
+        if (lightProjectMemoryText) {
+          context.paperclipProjectMemory = {
+            format: "compact_markdown",
+            projectId: projectContext.id,
+            text: lightProjectMemoryText,
+            itemCount: lines.length,
+          };
+        } else {
+          delete context.paperclipProjectMemory;
+        }
+      }
+    }
     let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
+      paperclipExecutionMode: lightExecutionEnabled ? "light" : "standard",
     };
+    if (lightExecutionEnabled) {
+      const parsedLightConfig = lightCompanyConfigSchema.parse(companyExecutionSettings?.lightConfig ?? {});
+      if (typeof runtimeConfig.promptTemplate === "string") {
+        runtimeConfig.promptTemplate = truncateLightContextText(
+          runtimeConfig.promptTemplate,
+          parsedLightConfig.contextComponentBudgets.protocol * 4,
+          "Move durable project rules to the configured project context documents",
+        );
+      }
+      if (typeof runtimeConfig.bootstrapPromptTemplate === "string") {
+        runtimeConfig.bootstrapPromptTemplate = truncateLightContextText(
+          runtimeConfig.bootstrapPromptTemplate,
+          parsedLightConfig.contextComponentBudgets.protocol * 4,
+          "Move durable project rules to the configured project context documents",
+        );
+      }
+    }
     const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
     const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
       adapterType: agent.adapterType,
@@ -15800,12 +16228,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueIdentifier: issueRef?.identifier ?? null,
         });
         const existingRuntimeEnv = parseObject(runtimeConfig.env);
-        const scratchEnv = buildHeartbeatRunScratchEnv(existingRuntimeEnv, runScratch);
+        const lightCli = lightExecutionEnabled
+          ? await installPaperclipLightCli(runScratch)
+          : null;
+        const scratchEnv = buildHeartbeatRunScratchEnv(existingRuntimeEnv, runScratch, {
+          toolBinDirs: lightCli ? [lightCli.binDir] : [],
+        });
         runtimeConfig = {
           ...runtimeConfig,
           env: {
             ...existingRuntimeEnv,
             ...scratchEnv.env,
+            ...(issueRef?.projectId ? { PAPERCLIP_PROJECT_ID: issueRef.projectId } : {}),
+            ...(lightCli ? { PAPERCLIP_LIGHT_CLI: lightCli.executablePath } : {}),
           },
         };
         context.paperclipScratch = {
@@ -15814,10 +16249,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           cleanupPolicy: "terminal_run",
           marker: HEARTBEAT_RUN_SCRATCH_MARKER,
           tempKeysApplied: scratchEnv.tempKeysApplied,
+          ...(lightCli ? { lightCli: "pc" } : {}),
         };
       } catch (scratchPrepareError) {
         runScratch = null;
         delete context.paperclipScratch;
+        if (lightExecutionEnabled) {
+          throw new Error(
+            `Paperclip Light runtime preflight failed before model dispatch: ${scratchPrepareError instanceof Error ? scratchPrepareError.message : String(scratchPrepareError)}`,
+          );
+        }
         logger.warn(
           {
             err: scratchPrepareError,
@@ -15830,6 +16271,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     } else {
       delete context.paperclipScratch;
+      if (lightExecutionEnabled) {
+        throw new Error(
+          "Paperclip Light runtime preflight failed before model dispatch: remote CLI staging is not configured for this execution environment. Configure native Paperclip actions or stage the bundled pc client before enabling Light mode.",
+        );
+      }
     }
     context.paperclipEnvironment = {
       id: selectedEnvironment.id,
@@ -15855,6 +16301,79 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : {}),
     };
+    if (lightExecutionEnabled && projectExecutionWorkspacePolicy?.lightContextDocuments) {
+      const parsedLightConfig = lightCompanyConfigSchema.parse(companyExecutionSettings?.lightConfig ?? {});
+      const configured = projectExecutionWorkspacePolicy.lightContextDocuments;
+      const projectDocuments = await loadLightProjectContextDocuments({
+        cwd: executionWorkspace.cwd,
+        paths: configured.paths,
+        tokenBudget: Math.min(configured.tokenBudget, parsedLightConfig.contextComponentBudgets.projectBrief),
+      });
+      lightProjectBriefText = projectDocuments.text;
+      if (lightProjectBriefText) {
+        context.paperclipProjectBrief = {
+          format: "compact_markdown",
+          projectId: projectContext?.id ?? null,
+          text: lightProjectBriefText,
+          documents: projectDocuments.loaded,
+        };
+      } else {
+        delete context.paperclipProjectBrief;
+      }
+    }
+    if (lightExecutionEnabled && companyExecutionSettings?.executionProfile === "light") {
+      const parsedLightConfig = lightCompanyConfigSchema.parse(companyExecutionSettings.lightConfig ?? {});
+      const adapterPrompt = readNonEmptyString(parseObject(agent.adapterConfig).promptTemplate) ?? "";
+      const compactTask = typeof context.paperclipTaskMarkdownCompact === "string"
+        ? context.paperclipTaskMarkdownCompact
+        : typeof context.paperclipTaskMarkdown === "string" ? context.paperclipTaskMarkdown : "";
+      const wakePayload = context.paperclipWake ? JSON.stringify(context.paperclipWake) : "";
+      const skillManifest = JSON.stringify(runtimeSkillEntries.map((entry) => ({
+        key: entry.key,
+        versionId: entry.versionId,
+        sourceStatus: entry.sourceStatus,
+      })));
+      const lightPolicy = JSON.stringify({
+        executionMode: "light",
+        companyConfig: companyExecutionSettings.lightConfig,
+        routing: parseObject(agent.runtimeConfig).lightRouting ?? null,
+      });
+      const resumedSession = Boolean(previousSessionParams) && !resetTaskSession;
+      const decisions = await lightControlService(db).recordRunContext(agent.companyId, run.id, [
+        { componentKind: "wake_delta", sourceEntityType: "heartbeat_run", sourceEntityId: run.id, content: wakePayload, included: Boolean(wakePayload), required: true, priority: 100, deduplicateOnResume: false },
+        { componentKind: "task_brief", sourceEntityType: "issue", sourceEntityId: issueId, content: compactTask, included: Boolean(compactTask), required: !resumedSession, priority: 95 },
+        { componentKind: "agent_instructions", sourceEntityType: "agent", sourceEntityId: agent.id, content: adapterPrompt, included: Boolean(adapterPrompt), required: !resumedSession, priority: 90 },
+        { componentKind: "execution_policy", sourceEntityType: "company", sourceEntityId: agent.companyId, content: lightPolicy, required: !resumedSession, priority: 85 },
+        { componentKind: "project_brief", sourceEntityType: "project", sourceEntityId: projectContext?.id ?? null, content: lightProjectBriefText, included: Boolean(lightProjectBriefText), required: !resumedSession, priority: 80 },
+        { componentKind: "project_memory", sourceEntityType: "project", sourceEntityId: projectContext?.id ?? null, content: lightProjectMemoryText, included: Boolean(lightProjectMemoryText), priority: 70 },
+        { componentKind: "skill_manifest", sourceEntityType: "agent", sourceEntityId: agent.id, content: skillManifest, included: runtimeSkillEntries.length > 0, priority: 50 },
+      ], {
+        resumedSession,
+        tokenBudget: parsedLightConfig.contextTokenBudget,
+        reservedOutputTokens: parsedLightConfig.contextComponentBudgets.reservedOutput,
+      });
+      const decisionByKind = new Map(decisions.map((decision) => [decision.componentKind, decision]));
+      context.paperclipLightContextPlan = {
+        resumedSession,
+        tokenBudget: parsedLightConfig.contextTokenBudget,
+        reservedOutputTokens: parsedLightConfig.contextComponentBudgets.reservedOutput,
+        omittedTaskBrief: decisionByKind.get("task_brief")?.included === false,
+        omittedProjectBrief: decisionByKind.get("project_brief")?.included === false,
+        omittedProjectMemory: decisionByKind.get("project_memory")?.included === false,
+        components: decisions.map((decision) => ({
+          kind: decision.componentKind,
+          included: decision.included,
+          estimatedTokens: decision.estimatedTokens,
+          exclusionReason: decision.exclusionReason,
+        })),
+      };
+      if (decisionByKind.get("project_memory")?.included === false) {
+        delete context.paperclipProjectMemory;
+      }
+      if (decisionByKind.get("project_brief")?.included === false) {
+        delete context.paperclipProjectBrief;
+      }
+    }
     await db
       .update(heartbeatRuns)
       .set({
@@ -15988,6 +16507,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
       issueId,
       continuationSummaryBody: continuationSummary?.body ?? null,
+      policyOverride: lightExecutionEnabled
+        ? (() => {
+            const parsed = lightCompanyConfigSchema.safeParse(companyExecutionSettings?.lightConfig ?? {});
+            return parsed.success
+              ? {
+                  enabled: true,
+                  maxSessionRuns: parsed.data.maxSessionRuns,
+                  maxRawInputTokens: parsed.data.maxSessionInputTokens,
+                  maxSessionAgeHours: parsed.data.maxSessionAgeHours,
+                }
+              : null;
+          })()
+        : null,
     });
     if (sessionCompaction.rotate) {
       context.paperclipSessionHandoffMarkdown = sessionCompaction.handoffMarkdown;
@@ -16662,7 +17194,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             issue: issueRef,
             environmentLeaseId: activeEnvironmentLease.lease.id,
           });
-          const prompt = readNonEmptyString(context.paperclipTaskMarkdown)
+          const prompt = readNonEmptyString(selectPaperclipTaskMarkdown(context, {
+            resumedSession: Boolean(runtimeSessionIdForAdapter),
+          }))
             ?? `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`;
           const configuredTimeoutSec = Number(runtimeConfig.timeoutSec);
           const timeoutMs = Number.isFinite(configuredTimeoutSec) && configuredTimeoutSec > 0
@@ -17009,6 +17543,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
                 costUsd: cacheAdjustedCostUsd,
+                billingType: normalizeLedgerBillingType(adapterResult.billingType),
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
@@ -17862,7 +18397,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
-          (issue.status === "done" || issue.status === "cancelled") &&
+          (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
@@ -18032,7 +18567,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issueRelations.relatedIssueId, issue.id),
               eq(issueRelations.type, "blocks"),
               eq(issues.companyId, issue.companyId),
-              notInArray(issues.status, ["done", "cancelled"]),
+              notInArray(issues.status, ["done", "failed", "cancelled"]),
               isNull(issues.hiddenAt),
             ),
           )
@@ -18436,7 +18971,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : await getWorktreeExecutionCutoff();
 
     const company = await db
-      .select({ status: companies.status })
+      .select({ status: companies.status, executionProfile: companies.executionProfile })
       .from(companies)
       .where(eq(companies.id, agent.companyId))
       .then((rows) => rows[0] ?? null);
@@ -18448,6 +18983,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       await writeSkippedRequest("company.inactive", {
         error: `Wake suppressed because company status is ${companyStatus}`,
+      });
+      return null;
+    }
+    if (source === "timer" && usesLightExecutionProfile(company.executionProfile, agent.runtimeConfig)) {
+      await writeSkippedRequest("heartbeat.timer.disabled_in_light_mode", {
+        error: "Timer heartbeat suppressed because the company uses event-driven Light execution",
       });
       return null;
     }
@@ -20283,7 +20824,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const cutoff = await getWorktreeExecutionCutoff();
 
       const allAgents = await db
-        .select({ ...getTableColumns(agents) })
+        .select({ ...getTableColumns(agents), companyExecutionProfile: companies.executionProfile })
         .from(agents)
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
@@ -20293,6 +20834,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let skipped = 0;
 
       for (const agent of allAgents) {
+        if (usesLightExecutionProfile(agent.companyExecutionProfile, agent.runtimeConfig)) continue;
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);

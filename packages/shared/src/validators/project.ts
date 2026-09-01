@@ -3,6 +3,7 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { lightRepositoryPolicySchema } from "./light-execution.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -31,6 +32,11 @@ export const projectExecutionWorkspacePolicySchema = z
     runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
+    lightRepository: lightRepositoryPolicySchema.optional().nullable(),
+    lightContextDocuments: z.object({
+      paths: z.array(z.string().trim().min(1).max(4_096)).max(50).default([]),
+      tokenBudget: z.number().int().min(0).max(64_000).default(2_000),
+    }).strict().optional().nullable(),
   })
   .strict();
 

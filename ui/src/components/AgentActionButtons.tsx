@@ -160,6 +160,7 @@ export function AgentActionButtons({
   size = "sm",
   assignLabel = "Assign Task",
   runLabel = "Run now",
+  showRunAction = true,
   showStatus = true,
   actionsDisabled = false,
   workActionsDisabled = false,
@@ -179,6 +180,8 @@ export function AgentActionButtons({
   size?: "sm" | "default";
   assignLabel?: string;
   runLabel?: string;
+  /** Hide task-less manual runs when the company uses event-driven Light execution. */
+  showRunAction?: boolean;
   showStatus?: boolean;
   actionsDisabled?: boolean;
   workActionsDisabled?: boolean;
@@ -361,15 +364,17 @@ export function AgentActionButtons({
         <Plus className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
-      <RunButton
-        onClick={() => {
-          if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
-          agentAction.mutate("invoke");
-        }}
-        disabled={assignAndRunDisabled}
-        label={runLabel}
-        size={size}
-      />
+      {showRunAction ? (
+        <RunButton
+          onClick={() => {
+            if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
+            agentAction.mutate("invoke");
+          }}
+          disabled={assignAndRunDisabled}
+          label={runLabel}
+          size={size}
+        />
+      ) : null}
       {isError ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}

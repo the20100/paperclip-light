@@ -237,6 +237,10 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .select({
             issueCount: sql<number>`count(distinct ${issues.id})::int`,
             costCents: sumAsNumber(costEvents.costCents),
+            unpricedEventCount:
+              sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`,
+            subscriptionIncludedEventCount:
+              sql<number>`count(*) filter (where ${costEvents.billingType} = 'subscription_included')::int`,
             inputTokens: sumAsNumber(costEvents.inputTokens),
             cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
             outputTokens: sumAsNumber(costEvents.outputTokens),
@@ -269,6 +273,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         issueCount: Number(costRow?.issueCount ?? 0),
         includeDescendants: true,
         costCents: Number(costRow?.costCents ?? 0),
+        unpricedEventCount: Number(costRow?.unpricedEventCount ?? 0),
+        subscriptionIncludedEventCount: Number(costRow?.subscriptionIncludedEventCount ?? 0),
         inputTokens: Number(costRow?.inputTokens ?? 0),
         cachedInputTokens: Number(costRow?.cachedInputTokens ?? 0),
         outputTokens: Number(costRow?.outputTokens ?? 0),

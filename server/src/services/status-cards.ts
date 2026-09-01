@@ -45,7 +45,7 @@ type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
 type StatusCardRow = typeof statusCards.$inferSelect;
 
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "failed", "cancelled"]);
 
 function promptHash(prompt: string) {
   return createHash("sha256").update(prompt).digest("hex");

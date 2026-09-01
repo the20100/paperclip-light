@@ -1,7 +1,8 @@
-import { Router, type Request } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
+  lightCompanyConfigSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createRoutineTriggerSchema,
@@ -13,7 +14,7 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
-import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
+import { accessService, companyService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -29,10 +30,32 @@ export function routineRoutes(
   });
   const documentAnnotationsSvc = documentAnnotationService(db);
   const access = accessService(db);
+  const companies = companyService(db);
   const routineDocumentKey = "description";
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  async function applyLightRoutineDefaults(req: Request, _res: Response, next: NextFunction) {
+    try {
+      const companyId = req.params.companyId as string;
+      const company = await companies.getById(companyId);
+      if (company?.executionProfile === "light") {
+        const config = lightCompanyConfigSchema.parse(company.lightConfig ?? {});
+        const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? req.body as Record<string, unknown>
+          : {};
+        req.body = {
+          ...body,
+          concurrencyPolicy: body.concurrencyPolicy ?? config.routineConcurrencyPolicy,
+          catchUpPolicy: body.catchUpPolicy ?? config.routineCatchUpPolicy,
+        };
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
   }
 
   function annotationActorInput(req: Request) {
@@ -154,7 +177,7 @@ export function routineRoutes(
     res.json(result);
   });
 
-  router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
+  router.post("/companies/:companyId/routines", applyLightRoutineDefaults, validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);

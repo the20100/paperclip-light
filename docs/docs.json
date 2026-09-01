@@ -32,6 +32,12 @@
               "start/core-concepts",
               "start/architecture"
             ]
+          },
+          {
+            "group": "Product specifications",
+            "pages": [
+              "specs/paperclip-light"
+            ]
           }
         ]
       },

@@ -933,7 +933,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRelations.relatedIssueId, issue.id),
           eq(issueRelations.type, "blocks"),
           eq(issues.companyId, issue.companyId),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
           isNull(issues.hiddenAt),
         ),
       )
@@ -1300,7 +1300,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function isTerminalIssueStatus(status: string | null | undefined) {
-    return status === "done" || status === "cancelled";
+    return status === "done" || status === "failed" || status === "cancelled";
   }
 
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
@@ -1363,7 +1363,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
           eq(issues.originId, runId),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       )
       .limit(1);
@@ -1899,7 +1899,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssue.originKind === STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND &&
       evaluationIssue.originId === run.id &&
       evaluationIssue.hiddenAt === null &&
-      !["done", "cancelled"].includes(evaluationIssue.status) &&
+      !["done", "failed", "cancelled"].includes(evaluationIssue.status) &&
       evaluationIssue?.assigneeAgentId === input.actor.agentId;
     if (!boardActor && !assignedRecoveryOwner) {
       throw forbidden("Only the board or the assigned recovery owner can record watchdog decisions");
@@ -2422,7 +2422,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.relatedIssueId, issueId),
           eq(issueRelations.type, "blocks"),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
   }
@@ -2440,7 +2440,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.companyId, issue.companyId),
           eq(issues.parentId, issue.id),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
   }
@@ -2454,7 +2454,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.companyId, issue.companyId),
           eq(issues.parentId, issue.id),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
     const openChildren = [] as Array<{ id: string; identifier: string | null }>;
@@ -2887,7 +2887,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      if (issue.status === "done" || issue.status === "cancelled") {
+      if (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") {
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
           sourceIssueId: action.sourceIssueId,
@@ -3116,7 +3116,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!current || current.status === "done" || current.status === "cancelled") return "skipped";
+    if (!current || current.status === "done" || current.status === "failed" || current.status === "cancelled") return "skipped";
 
     const dependencyWait = await resolveContinuationWaitingOnReview(current);
     if (dependencyWait) {
@@ -4445,7 +4445,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
               RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
             ]),
-            notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
           ),
         ),
       issueRowsPromise.then((rows) => {
@@ -4552,7 +4552,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           eq(issues.originId, incidentKey),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       )
       .limit(1)
@@ -4569,7 +4569,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       )
       .limit(1)
@@ -4585,7 +4585,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issues.companyId, finding.companyId),
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
     return openRecoveries.find((row) => {
@@ -4690,7 +4690,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
     const result = {
@@ -4719,7 +4719,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(and(eq(issues.companyId, parsed.companyId), eq(issues.id, parsed.issueId)))
         .then((rows) => rows[0] ?? null);
-      if (sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)) {
+      if (sourceIssue && !["done", "failed", "cancelled"].includes(sourceIssue.status)) {
         const blockerIds = await existingBlockerIssueIds(parsed.companyId, sourceIssue.id);
         if (blockerIds.includes(recovery.id)) {
           result.activeSkipped += 1;
@@ -4749,7 +4749,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           visibleIssueCondition(),
-          inArray(issues.status, ["done", "cancelled"]),
+          inArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       );
 
@@ -5721,7 +5721,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // runs from the issue-terminal authority below.
     const runIdsReferencedByActiveIssue = new Set<string>();
     for (const issue of candidates) {
-      if (issue.status === "done" || issue.status === "cancelled") continue;
+      if (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") continue;
       for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
         if (runId) runIdsReferencedByActiveIssue.add(runId);
       }

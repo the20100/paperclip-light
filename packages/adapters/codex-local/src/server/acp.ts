@@ -154,9 +154,21 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   const normalizedModel = normalizeCodexModel(
     typeof config.model === "string" ? config.model : "",
   );
+  const env = parseObject(config.env);
+  const bypassSandbox = config.dangerouslyBypassApprovalsAndSandbox === true
+    || config.dangerouslyBypassSandbox === true;
 
   return {
     ...config,
+    // The CLI lane maps this Paperclip option to
+    // `--dangerously-bypass-approvals-and-sandbox`. codex-acp exposes the same
+    // behavior through its startup mode instead. Without this mapping ACP keeps
+    // its default workspace-write sandbox with networkAccess=false, so even the
+    // run-scoped Paperclip CLI cannot reach the local control plane.
+    env: {
+      ...env,
+      ...(bypassSandbox ? { INITIAL_AGENT_MODE: "agent-full-access" } : {}),
+    },
     agent: "codex",
     mode,
     permissionMode,

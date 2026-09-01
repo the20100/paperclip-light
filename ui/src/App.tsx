@@ -29,6 +29,7 @@ import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
 import { Workspaces } from "./pages/Workspaces";
+import { CompanyFiles, CompanyTerminal } from "./pages/Workbench";
 import { Issues } from "./pages/Issues";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
@@ -46,6 +47,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
+import { LightActions } from "./pages/LightActions";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
@@ -117,6 +119,7 @@ function boardRoutes() {
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
+      <Route path="company/settings/light" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
@@ -235,10 +238,14 @@ function boardRoutes() {
       <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/files" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/terminal" element={<ProjectDetail />} />
       <Route element={<IsolatedWorkspacesRouteGate />}>
         <Route path="workspaces" element={<Workspaces />} />
       </Route>
       <Route path="issues" element={<Issues />} />
+      <Route path="files" element={<CompanyFiles />} />
+      <Route path="terminal" element={<CompanyTerminal />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -319,6 +326,7 @@ function boardRoutes() {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
+      <Route path="actions" element={<LightActions />} />
       <Route path="activity" element={<CompanyActivity />} />
       {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
           links keep working, preset to the agent-actions scope. */}
@@ -682,6 +690,7 @@ export function App() {
           <Route path="pipelines/:pipelineId/items/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
+          <Route path="actions" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
           <Route path="decisions" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
@@ -708,7 +717,12 @@ export function App() {
           <Route path="projects/:projectId/workspaces" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/files" element={<UnprefixedBoardRedirect />} />
+          <Route path="projects/:projectId/terminal" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+          <Route path="files" element={<UnprefixedBoardRedirect />} />
+          <Route path="terminal" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />

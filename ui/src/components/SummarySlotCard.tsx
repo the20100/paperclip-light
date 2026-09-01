@@ -26,7 +26,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
 const SUMMARIZER_KEY = "summarizer";
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "failed", "cancelled"]);
 const LATEST_REVISION_SELECT_VALUE = "__latest__";
 const MAX_REVISION_OPTIONS = 30;
 

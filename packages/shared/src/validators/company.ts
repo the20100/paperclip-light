@@ -4,6 +4,7 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { executionProfileSchema, lightCompanyConfigSchema } from "./light-execution.js";
 
 const logoAssetIdSchema = z.string().guid().nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
@@ -26,6 +27,8 @@ export const createCompanySchema = z.object({
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
+  executionProfile: executionProfileSchema.optional().default("standard"),
+  lightConfig: lightCompanyConfigSchema.optional().nullable(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;

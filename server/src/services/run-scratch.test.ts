@@ -6,6 +6,7 @@ import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
+  installPaperclipLightCli,
   prepareHeartbeatRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
@@ -121,5 +122,26 @@ describe("heartbeat run scratch cleanup", () => {
     expect(result.env.TEMP).toBe(scratch.dir);
     expect(result.env.TMP).toBe(scratch.dir);
     expect(result.tempKeysApplied).toEqual(["TEMP", "TMP"]);
+  });
+
+  it("installs the Light CLI into a private run PATH", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    }));
+
+    const installation = await installPaperclipLightCli(scratch);
+    const result = buildHeartbeatRunScratchEnv(
+      { PATH: "/usr/local/bin:/usr/bin" },
+      scratch,
+      { toolBinDirs: [installation.binDir] },
+    );
+
+    await expect(fs.stat(installation.executablePath)).resolves.toMatchObject({
+      isFile: expect.any(Function),
+    });
+    expect(result.env.PATH?.split(path.delimiter)[0]).toBe(installation.binDir);
+    expect(result.env.PATH).toContain("/usr/local/bin:/usr/bin");
   });
 });

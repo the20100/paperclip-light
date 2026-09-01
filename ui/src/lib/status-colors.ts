@@ -223,8 +223,10 @@ export const issueStatusColor: Record<string, BrandChipColor> = {
   todo: "amber",
   in_progress: "blue",
   in_review: "violet",
+  paused: "amber",
   done: "green",
   blocked: "red",
+  failed: "red",
   cancelled: "gray",
 };
 
@@ -256,8 +258,10 @@ export const taskStatusVar: Record<string, string> = {
   todo: "--status-task-todo",
   in_progress: "--status-task-in_progress",
   in_review: "--status-task-in_review",
+  paused: "--status-task-todo",
   done: "--status-task-done",
   blocked: "--status-task-blocked",
+  failed: "--status-task-blocked",
   cancelled: "--status-task-cancelled",
 };
 export const taskStatusVarDefault = "--status-task-backlog";
@@ -274,8 +278,10 @@ export const taskStatusIconVar: Record<string, string> = {
   todo: "--status-task-icon-todo",
   in_progress: "--status-task-icon-in_progress",
   in_review: "--status-task-icon-in_review",
+  paused: "--status-task-icon-todo",
   done: "--status-task-icon-done",
   blocked: "--status-task-icon-blocked",
+  failed: "--status-task-icon-blocked",
   cancelled: "--status-task-icon-cancelled",
   in_queue: "--status-task-icon-in_queue",
 };

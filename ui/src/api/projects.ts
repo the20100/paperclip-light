@@ -1,4 +1,5 @@
 import type {
+  FileReservation,
   Project,
   ProjectWorkspace,
   WorkspaceOperation,
@@ -62,5 +63,12 @@ export const projectsApi = {
     ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
+  listFileReservations: (projectId: string) =>
+    api.get<FileReservation[]>(`/projects/${encodeURIComponent(projectId)}/file-reservations`),
+  forceReleaseFileReservation: (projectId: string, issueId: string, paths: string[]) =>
+    api.post<{ released: FileReservation[]; promoted: FileReservation[] }>(
+      `/projects/${encodeURIComponent(projectId)}/file-reservations/release`,
+      { issueId, paths, force: true },
+    ),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
 };

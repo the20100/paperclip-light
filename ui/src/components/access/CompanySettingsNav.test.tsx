@@ -8,12 +8,17 @@ import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
 
 let currentPathname = "/company/settings";
+let currentExecutionProfile: "standard" | "light" = "standard";
 const navigateMock = vi.hoisted(() => vi.fn());
 const pageTabBarMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: currentPathname, search: "", hash: "" }),
   useNavigate: () => navigateMock,
+}));
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompany: { executionProfile: currentExecutionProfile } }),
 }));
 
 vi.mock("@/components/ui/tabs", () => ({
@@ -57,6 +62,7 @@ describe("CompanySettingsNav", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     currentPathname = "/company/settings";
+    currentExecutionProfile = "standard";
   });
 
   afterEach(() => {
@@ -68,6 +74,7 @@ describe("CompanySettingsNav", () => {
   it("maps company settings routes to the expected shared tab value", () => {
     expect(getCompanySettingsTab("/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
+    expect(getCompanySettingsTab("/PAP/company/settings/light")).toBe("light");
     expect(getCompanySettingsTab("/company/settings/environments")).toBe("instance-environments");
     expect(getCompanySettingsTab("/company/export")).toBe("export");
     expect(getCompanySettingsTab("/PAP/company/export")).toBe("export");
@@ -172,6 +179,25 @@ describe("CompanySettingsNav", () => {
       "instance-experimental",
       "instance-adapters",
     ]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Light section only for Light companies", async () => {
+    currentExecutionProfile = "light";
+    currentPathname = "/PAP/company/settings/light";
+    const root = createRoot(container);
+
+    await act(async () => {
+      renderNav(root);
+    });
+
+    expect(pageTabBarMock.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      value: "light",
+      items: expect.arrayContaining([{ value: "light", label: "Light execution" }]),
+    }));
 
     await act(async () => {
       root.unmount();

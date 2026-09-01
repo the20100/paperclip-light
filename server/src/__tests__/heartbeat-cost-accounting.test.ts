@@ -23,6 +23,16 @@ describe("heartbeat cost accounting", () => {
     })).toBe("reported");
   });
 
+  it("treats subscription-included usage as reported zero billed cost", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: null,
+      billingType: "subscription_included",
+      inputTokens: 72_000,
+      cachedInputTokens: 0,
+      outputTokens: 700,
+    })).toBe("reported");
+  });
+
   it("uses an explicit cache-adjusted provider cost when available", () => {
     expect(resolveCacheAdjustedCostUsd({
       costUsd: 1.25,

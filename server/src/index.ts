@@ -41,6 +41,7 @@ import {
 } from "./services/managed-config.js";
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
+import { setupWorkbenchTerminalWebSocketServer } from "./realtime/workbench-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
@@ -60,6 +61,7 @@ import {
   issueThreadInteractionService,
   issueService,
   instanceSettingsService,
+  lightMaintenanceService,
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -866,6 +868,7 @@ export async function startServer(): Promise<StartedServer> {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
+  setupWorkbenchTerminalWebSocketServer(server);
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -1102,6 +1105,29 @@ export async function startServer(): Promise<StartedServer> {
     if (heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
+  const lightMaintenance = lightMaintenanceService(db as any);
+  const scheduleLightMaintenanceSweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(lightMaintenance
+      .sweep()
+      .then((result) => {
+        if (
+          result.reservationsOrphaned > 0
+          || result.repositoryOperationsFailed > 0
+          || result.runLogsDeleted > 0
+          || result.runLogDeleteFailures > 0
+        ) {
+          logger.info(result, "Paperclip Light deterministic maintenance sweep completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "Paperclip Light deterministic maintenance sweep failed");
+      }));
+  };
+
+  await lightMaintenance.sweep().catch((err) => {
+    logger.error({ err }, "Paperclip Light startup maintenance sweep failed");
+  });
 
   await questionResponseDeliveries.sweepPending().then((result) => {
     if (result.scanned > 0) {
@@ -1447,6 +1473,7 @@ export async function startServer(): Promise<StartedServer> {
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
+        scheduleLightMaintenanceSweep();
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -1602,6 +1629,7 @@ export async function startServer(): Promise<StartedServer> {
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
+      scheduleLightMaintenanceSweep();
     });
   }
   

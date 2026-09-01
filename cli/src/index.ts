@@ -49,6 +49,7 @@ import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
 import { registerConnectionIntentCommands } from "./commands/client/connections.js";
+import { registerLightCommands } from "./commands/client/light.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
@@ -212,6 +213,7 @@ registerContextCommands(program);
 registerConnectCommand(program);
 registerConnectionIntentCommands(program);
 registerCompanyCommands(program);
+registerLightCommands(program);
 registerIssueCommands(program);
 registerAgentCommands(program);
 registerProjectCommands(program);

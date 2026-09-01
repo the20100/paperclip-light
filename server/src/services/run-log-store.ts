@@ -37,6 +37,8 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  /** Delete a completed log from every configured backing store. */
+  delete?(handle: RunLogHandle): Promise<void>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
   // in-flight mirror is not enabled.
@@ -345,6 +347,16 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       if (local) return local;
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
       return readS3Range(handle.logRef, offset, limitBytes);
+    },
+
+    async delete(handle) {
+      if (handle.store !== "local_file") return;
+      await retireInflightMirror(handle.logRef);
+      const absPath = resolveWithin(basePath, handle.logRef);
+      await fs.rm(absPath, { force: true });
+      if (s3) {
+        await s3.provider.deleteObject({ objectKey: s3Key(handle.logRef) });
+      }
     },
 
     async flushInflightMirrors() {

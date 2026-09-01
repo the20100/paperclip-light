@@ -489,6 +489,19 @@ describe("codex_local ACP lane", () => {
     });
   });
 
+  it("maps the Codex sandbox bypass option to ACP full-access mode", () => {
+    expect(buildCodexAcpConfig({
+      engine: "acp",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      env: { EXISTING: "value", INITIAL_AGENT_MODE: "read-only" },
+    })).toMatchObject({
+      env: {
+        EXISTING: "value",
+        INITIAL_AGENT_MODE: "agent-full-access",
+      },
+    });
+  });
+
   it("normalizes the legacy bare gpt-5.6 alias to gpt-5.6-sol", () => {
     expect(buildCodexAcpConfig({ engine: "acp", model: "gpt-5.6" })).toMatchObject({
       model: "gpt-5.6-sol",

@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import { and, count as countFn, eq } from "drizzle-orm";
+import { and, count as countFn, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable } from "@paperclipai/db";
+import { agents as agentsTable, lightConfigurationRevisions } from "@paperclipai/db";
 import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
 import {
   MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
@@ -1263,6 +1263,33 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
+    }
+    if (body.executionProfile !== undefined || body.lightConfig !== undefined) {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-config:${companyId}`}, 0))`);
+        const revision = await tx.select({ value: sql<number>`coalesce(max(${lightConfigurationRevisions.revision}), 0) + 1` })
+          .from(lightConfigurationRevisions)
+          .where(and(
+            eq(lightConfigurationRevisions.scopeType, "company"),
+            eq(lightConfigurationRevisions.scopeId, companyId),
+          )).then((rows) => Number(rows[0]?.value ?? 1));
+        await tx.insert(lightConfigurationRevisions).values({
+          companyId,
+          scopeType: "company",
+          scopeId: companyId,
+          revision,
+          snapshot: {
+            executionProfile: company.executionProfile,
+            lightConfig: company.lightConfig,
+          },
+          changeSummary: `Updated ${[
+            body.executionProfile !== undefined ? "execution profile" : null,
+            body.lightConfig !== undefined ? "Light configuration" : null,
+          ].filter(Boolean).join(" and ")}`,
+          createdByActorType: actor.actorType,
+          createdByActorId: actor.actorId,
+        });
+      });
     }
     if (!lifecycleEventEmittedByService) {
       await logActivity(db, {

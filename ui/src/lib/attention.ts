@@ -57,6 +57,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   blocker_attention: { label: "Blocked dependency" },
   review: { label: "Review" },
   failed_run: { label: "Failed run" },
+  file_reservation_alert: { label: "Orphaned file lock" },
   budget_alert: { label: "Budget" },
   agent_error_alert: { label: "Agent error" },
 };
@@ -122,6 +123,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "decision":
       return "review";
     case "failed_run":
+    case "file_reservation_alert":
     case "agent_error_alert":
     case "blocker_attention":
     case "recovery_action":

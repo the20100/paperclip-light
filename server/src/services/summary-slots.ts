@@ -33,7 +33,7 @@ import { issueService } from "./issues.js";
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 
 /** Generation issues in these statuses are no longer active and can be superseded. */
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "failed", "cancelled"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
 const SUMMARY_SLOT_REVISION_LIMIT = 20;

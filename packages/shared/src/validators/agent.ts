@@ -64,8 +64,24 @@ const agentModelProfileConfigSchema = z.object({
 }).strict();
 
 export const agentRuntimeConfigSchema = z.object({
+  executionMode: z.enum(["inherit", "standard", "light"]).optional(),
   modelProfiles: z.object({
     cheap: agentModelProfileConfigSchema.optional(),
+  }).strict().optional(),
+  lightRouting: z.object({
+    mode: z.enum(["fixed", "auto"]).optional().default("fixed"),
+    primaryModel: z.string().trim().min(1).max(512).optional(),
+    requiredCapabilities: z.array(z.enum([
+      "code", "tools", "vision", "browser", "reasoning", "long_context",
+    ])).max(6).optional().default([]),
+    fallbackEnabled: z.boolean().optional().default(true),
+    onUnavailable: z.enum(["fallback", "pause"]).optional().default("fallback"),
+    fallbackModels: z.array(z.object({
+      model: z.string().trim().min(1).max(512),
+      capabilities: z.array(z.enum([
+        "code", "tools", "vision", "browser", "reasoning", "long_context",
+      ])).max(6).optional().default([]),
+    }).strict()).max(10).optional().default([]),
   }).strict().optional(),
 }).catchall(z.unknown());
 

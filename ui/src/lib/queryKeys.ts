@@ -207,6 +207,7 @@ export const queryKeys = {
     acceptedPlanDecompositions: (issueId: string) =>
       ["issues", "accepted-plan-decompositions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
+    costSummaries: () => ["issues", "cost-summary"] as const,
     costSummary: (issueId: string, options: { excludeRoot?: boolean } = {}) =>
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)

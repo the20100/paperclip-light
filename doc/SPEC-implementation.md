@@ -1083,6 +1083,7 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `GET /companies/:companyId/costs/summary`
 - `GET /companies/:companyId/costs/by-agent`
 - `GET /companies/:companyId/costs/by-project`
+- `GET /issues/:issueId/cost-summary` (task plus descendants; `excludeRoot=true` returns descendants only)
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
 
@@ -1297,6 +1298,12 @@ Validation:
 
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
+
+The task detail surface displays normalized input, cached-input, and output
+tokens together with billed cost. Parent tasks display both their direct usage
+and the complete recursive task-tree total. Usage with no known provider price
+must be labeled unpriced/cost unavailable; it must not be presented as zero
+cost.
 
 ## 14. UI Requirements (Board App)
 

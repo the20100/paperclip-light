@@ -67,7 +67,7 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 type RuntimeServiceReadDb = Pick<Db, "select">;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "failed", "cancelled"]);
 
 // Return the timestamp when an issue became terminal. A `done` issue uses
 // `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown

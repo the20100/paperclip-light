@@ -127,8 +127,10 @@ const issueStatusLabels: Record<IssueStatus, string> = {
   todo: "Todo",
   in_progress: "In progress",
   in_review: "In review",
+  paused: "Paused",
   done: "Done",
   blocked: "Blocked",
+  failed: "Failed",
   cancelled: "Cancelled",
 };
 const progressSegmentClasses: Record<IssueStatus, string> = {
@@ -136,8 +138,10 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
   todo: "bg-blue-500",
   in_progress: "bg-yellow-500",
   in_review: "bg-violet-500",
+  paused: "bg-amber-400",
   done: "bg-green-500",
   blocked: "bg-red-500",
+  failed: "bg-red-700",
   cancelled: "bg-neutral-400",
 };
 

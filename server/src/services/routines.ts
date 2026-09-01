@@ -78,9 +78,9 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
-const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "paused", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "failed", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";

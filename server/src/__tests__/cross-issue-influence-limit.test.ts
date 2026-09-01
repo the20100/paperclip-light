@@ -106,6 +106,20 @@ describe("cross-issue influence limit rollout", () => {
     expect(capError.details.whoCanAct).toContain("Fable");
   });
 
+  it("accepts a stricter company-level Light cap", () => {
+    const now = CROSS_ISSUE_INFLUENCE_ENFORCE_AT;
+    expect(evaluateCrossIssueInfluenceLimit({ priorCount: 4, cap: 5, now })).toMatchObject({
+      allowed: true,
+      count: 5,
+      cap: 5,
+    });
+    expect(evaluateCrossIssueInfluenceLimit({ priorCount: 5, cap: 5, now })).toMatchObject({
+      allowed: false,
+      count: 6,
+      cap: 5,
+    });
+  });
+
   it("uses one durable counter for cross-issue comments, PATCH updates, and interaction resolutions", async () => {
     const fake = counterDb();
     const base = {

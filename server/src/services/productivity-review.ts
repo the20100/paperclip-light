@@ -265,7 +265,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
           visibleIssueCondition(),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ),
       )
       .orderBy(desc(issues.updatedAt))
@@ -288,7 +288,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          inArray(issues.status, ["done", "cancelled"]),
+          inArray(issues.status, ["done", "failed", "cancelled"]),
           gt(issues.updatedAt, cutoff),
         ),
       )

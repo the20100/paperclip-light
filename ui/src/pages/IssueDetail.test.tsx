@@ -26,6 +26,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
   listFeedbackVotes: vi.fn(),
+  getCostSummary: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
   previewTreeControl: vi.fn(),
@@ -1050,6 +1051,19 @@ describe("IssueDetail", () => {
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockIssuesApi.getCostSummary.mockResolvedValue({
+      issueId: "issue-1",
+      issueCount: 1,
+      includeDescendants: true,
+      costCents: 0,
+      unpricedEventCount: 0,
+      subscriptionIncludedEventCount: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      runCount: 0,
+      runtimeMs: 0,
+    });
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
     mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
@@ -2766,6 +2780,119 @@ describe("IssueDetail", () => {
 
     expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull();
     expect(mockIssueChatThreadRender).toHaveBeenCalled();
+  });
+
+  it("shows task token usage and billed cost in the chat header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getCostSummary.mockResolvedValue({
+      issueId: "issue-1",
+      issueCount: 1,
+      includeDescendants: true,
+      costCents: 27,
+      unpricedEventCount: 0,
+      subscriptionIncludedEventCount: 0,
+      inputTokens: 1_200,
+      cachedInputTokens: 300,
+      outputTokens: 500,
+      runCount: 2,
+      runtimeMs: 42_000,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const usage = container.querySelector('[data-testid="issue-cost-summary"]');
+    expect(usage?.textContent).toContain("Usage");
+    expect(usage?.textContent).toContain("2.0k tokens");
+    expect(usage?.textContent).toContain("$0.27 billed");
+    expect(usage?.textContent).toContain("2 runs");
+  });
+
+  it("labels fixed-subscription usage without pretending it has an API charge", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.getCostSummary.mockResolvedValue({
+      issueId: "issue-1",
+      issueCount: 1,
+      includeDescendants: true,
+      costCents: 0,
+      unpricedEventCount: 0,
+      subscriptionIncludedEventCount: 1,
+      inputTokens: 72_000,
+      cachedInputTokens: 0,
+      outputTokens: 700,
+      runCount: 1,
+      runtimeMs: 42_000,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[data-testid="issue-cost-summary"]')?.textContent)
+      .toContain("72.7k tokens · included in subscription · 1 run");
+  });
+
+  it("separates direct task usage from the total including sub-tasks", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({ id: "child-1", parentId: "issue-1", identifier: "PAP-2", issueNumber: 2 }),
+    ]);
+    mockIssuesApi.getCostSummary
+      .mockResolvedValueOnce({
+        issueId: "issue-1",
+        issueCount: 2,
+        includeDescendants: true,
+        costCents: 50,
+        unpricedEventCount: 1,
+        subscriptionIncludedEventCount: 0,
+        inputTokens: 3_000,
+        cachedInputTokens: 1_000,
+        outputTokens: 1_000,
+        runCount: 3,
+        runtimeMs: 60_000,
+      })
+      .mockResolvedValueOnce({
+        issueId: "issue-1",
+        issueCount: 1,
+        includeDescendants: true,
+        costCents: 30,
+        unpricedEventCount: 1,
+        subscriptionIncludedEventCount: 0,
+        inputTokens: 1_500,
+        cachedInputTokens: 1_000,
+        outputTokens: 500,
+        runCount: 2,
+        runtimeMs: 40_000,
+      });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const usage = container.querySelector('[data-testid="issue-cost-summary"]');
+      expect(usage?.textContent).toContain("This task 2.0k tokens · $0.20 billed · 1 run");
+      expect(usage?.textContent).toContain("With sub-tasks 5.0k tokens · $0.50 billed + unpriced usage · 3 runs");
+    });
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {

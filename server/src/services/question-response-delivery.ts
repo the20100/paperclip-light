@@ -537,7 +537,7 @@ export function questionResponseDeliveryService(
         : Promise.resolve(null),
     ]);
     const adapter = agent?.adapterType ?? "unknown";
-    if (!issue || !issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") {
+    if (!issue || !issue.assigneeAgentId || issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") {
       return recordTerminal({
         delivery: claimed,
         interaction,

@@ -42,7 +42,9 @@ export const boardStatuses = [
   "todo",
   "in_progress",
   "in_review",
+  "paused",
   "blocked",
+  "failed",
   "done",
   "cancelled",
 ] as const satisfies readonly IssueStatus[];

@@ -69,7 +69,7 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
   restoreHold: IssueTreeHold | null;
 };
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "failed", "cancelled"]);
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
 const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
@@ -881,7 +881,7 @@ export function issueTreeControlService(db: Db) {
           and(
             eq(issues.companyId, companyId),
             inArray(issues.id, issueIds),
-            notInArray(issues.status, ["done", "cancelled"]),
+            notInArray(issues.status, ["done", "failed", "cancelled"]),
           ),
         );
 

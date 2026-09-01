@@ -569,7 +569,7 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
 }
 
 function isTerminalIssueStatus(status: string) {
-  return status === "done" || status === "cancelled";
+  return status === "done" || status === "failed" || status === "cancelled";
 }
 
 function interactionNotFoundError() {

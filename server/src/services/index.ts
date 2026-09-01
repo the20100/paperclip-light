@@ -178,6 +178,20 @@ export {
 } from "./workspace-runtime-leases.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export {
+  lightFileReservationService,
+  lightRepositoryService,
+  lightTaskCheckpointService,
+  normalizeReservedPath,
+  reservedPathsOverlap,
+  type LightExecutionActor,
+} from "./light-execution.js";
+export { lightMaintenanceService, type LightMaintenanceSweepResult } from "./light-maintenance.js";
+export {
+  lightControlService,
+  estimateContextTokens,
+  type ContextLedgerInput,
+} from "./light-control.js";
+export {
   createWorkspaceGitOperationScheduler,
   getWorkspaceGitOperationSchedulerSnapshot,
   workspaceGitOperationScheduler,

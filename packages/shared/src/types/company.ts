@@ -4,6 +4,7 @@ import type {
   IssueThreadInteractionResolverPolicy,
   PauseReason,
 } from "../constants.js";
+import type { ExecutionProfile, LightCompanyConfig } from "../validators/light-execution.js";
 
 export interface InteractionResolverKindGovernance {
   defaultPolicy?: IssueThreadInteractionResolverPolicy;
@@ -26,6 +27,8 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
+  executionProfile?: ExecutionProfile;
+  lightConfig?: LightCompanyConfig | null;
   requireBoardApprovalForNewAgents: boolean;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;

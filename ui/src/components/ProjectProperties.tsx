@@ -2,7 +2,7 @@ import { useState } from "react";
 import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import type { LightRepositoryPolicy, Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -59,7 +59,29 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
   | "execution_workspace_runtime_provision_command"
-  | "execution_workspace_teardown_command";
+  | "execution_workspace_teardown_command"
+  | "light_repository"
+  | "light_context_documents";
+
+const DEFAULT_LIGHT_REPOSITORY_POLICY: LightRepositoryPolicy = {
+  enabled: false,
+  enforcement: "strict",
+  activeBranch: "main",
+  allowedPushBranches: ["main"],
+  allowedMergeTargets: ["main"],
+  remoteName: "origin",
+  validationCommand: null,
+  validationCommands: [],
+  reservationLeaseSeconds: 900,
+  maxReservedFilesPerTask: 100,
+  requireCleanValidationBarrier: true,
+  requireHumanApprovalForDeploy: true,
+  allowAgentCommit: true,
+  allowAgentPush: true,
+  allowAgentMerge: false,
+  requireHumanApprovalForMerge: true,
+  ephemeralWriteRoots: [],
+};
 
 const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   value: SharedWorkspaceConcurrency;
@@ -249,7 +271,7 @@ function ArchiveDangerZone({
 }
 
 export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompany, selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
@@ -340,6 +362,32 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     branchTemplate: "",
     worktreeParentDir: "",
   };
+  const lightRepositoryPolicy: LightRepositoryPolicy = {
+    ...DEFAULT_LIGHT_REPOSITORY_POLICY,
+    ...(executionWorkspacePolicy?.lightRepository ?? {}),
+  };
+  const lightContextDocuments = executionWorkspacePolicy?.lightContextDocuments ?? {
+    paths: ["PROJECT.md"],
+    tokenBudget: 2_000,
+  };
+  const fileReservationsQuery = useQuery({
+    queryKey: ["light-file-reservations", project.id],
+    queryFn: () => projectsApi.listFileReservations(project.id),
+    enabled: selectedCompany?.executionProfile === "light" && lightRepositoryPolicy.enabled,
+    refetchInterval: 30_000,
+  });
+  const openFileReservations = (fileReservationsQuery.data ?? []).filter(
+    (reservation) => reservation.status === "active"
+      || reservation.status === "waiting"
+      || reservation.status === "orphaned",
+  );
+  const forceReleaseReservation = useMutation({
+    mutationFn: (reservation: { issueId: string; path: string }) =>
+      projectsApi.forceReleaseFileReservation(project.id, reservation.issueId, [reservation.path]),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["light-file-reservations", project.id] });
+    },
+  });
   // Defense in depth alongside the server's managed-sandbox-only read
   // filter: a cached environments list may still carry the local row.
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
@@ -425,6 +473,14 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       },
     };
   };
+
+  const updateLightRepositoryPolicy = (patch: Partial<LightRepositoryPolicy>) =>
+    updateExecutionWorkspacePolicy({
+      lightRepository: {
+        ...lightRepositoryPolicy,
+        ...patch,
+      },
+    });
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
@@ -985,6 +1041,394 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <p className="text-xs text-destructive">Failed to update workspace.</p>
           )}
         </div>
+
+        {selectedCompany?.executionProfile === "light" ? (
+          <>
+            <Separator className="my-4" />
+
+            <div className="space-y-3 rounded-md border border-border/70 p-3">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <span>Project context documents</span>
+                  <SaveIndicator state={fieldState("light_context_documents")} />
+                </div>
+                <p className="text-xs text-muted-foreground">Small repository files loaded on fresh task sessions, such as PROJECT.md, BRAND.md, or MARKETING.md.</p>
+              </div>
+              <label className="block space-y-1 text-xs">
+                <span className="text-muted-foreground">Repository-relative paths (comma-separated)</span>
+                <DraftInput
+                  value={lightContextDocuments.paths.join(", ")}
+                  onCommit={(value) => commitField("light_context_documents", updateExecutionWorkspacePolicy({
+                    lightContextDocuments: {
+                      ...lightContextDocuments,
+                      paths: value.split(",").map((entry) => entry.trim()).filter(Boolean),
+                    },
+                  })!)}
+                  immediate
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                  placeholder="PROJECT.md, BRAND.md"
+                />
+              </label>
+              <label className="block space-y-1 text-xs">
+                <span className="text-muted-foreground">Combined token budget</span>
+                <DraftInput
+                  value={String(lightContextDocuments.tokenBudget)}
+                  onCommit={(value) => commitField("light_context_documents", updateExecutionWorkspacePolicy({
+                    lightContextDocuments: {
+                      ...lightContextDocuments,
+                      tokenBudget: Math.max(0, Math.min(64_000, Number.parseInt(value, 10) || 0)),
+                    },
+                  })!)}
+                  immediate
+                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                />
+              </label>
+            </div>
+
+            <div className="space-y-3 py-1.5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <span>Shared repository broker</span>
+                    <SaveIndicator state={fieldState("light_repository")} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Agents reserve files, then validate, commit, and push through Paperclip on the shared checkout.
+                  </p>
+                </div>
+                {onUpdate || onFieldUpdate ? (
+                  <ToggleSwitch
+                    aria-label="Enable shared repository broker"
+                    checked={lightRepositoryPolicy.enabled}
+                    onCheckedChange={() =>
+                      commitField(
+                        "light_repository",
+                        updateExecutionWorkspacePolicy({
+                          defaultMode: "shared_workspace",
+                          sharedWorkspaceConcurrency: "allow",
+                          lightRepository: {
+                            ...lightRepositoryPolicy,
+                            enabled: !lightRepositoryPolicy.enabled,
+                          },
+                        })!,
+                      )}
+                  />
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {lightRepositoryPolicy.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                )}
+              </div>
+
+              {lightRepositoryPolicy.enabled ? (
+                <div className="grid gap-3 rounded-md border border-border/70 p-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Enforcement</span>
+                    <select
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 outline-none"
+                      value={lightRepositoryPolicy.enforcement}
+                      disabled={!onUpdate && !onFieldUpdate}
+                      onChange={(event) =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            enforcement: event.target.value as LightRepositoryPolicy["enforcement"],
+                          })!,
+                        )}
+                    >
+                      <option value="strict">Strict</option>
+                      <option value="advisory">Advisory</option>
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Active branch</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.activeBranch}
+                      onCommit={(activeBranch) => {
+                        const nextBranch = activeBranch.trim() || "main";
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            activeBranch: nextBranch,
+                            allowedPushBranches: Array.from(new Set([
+                              ...lightRepositoryPolicy.allowedPushBranches,
+                              nextBranch,
+                            ])),
+                          })!,
+                        );
+                      }}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="main"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs sm:col-span-2">
+                    <span className="text-muted-foreground">Branches agents may merge (comma-separated)</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.allowedMergeTargets.join(", ")}
+                      onCommit={(value) => commitField("light_repository", updateLightRepositoryPolicy({
+                        allowedMergeTargets: Array.from(new Set(
+                          value.split(",").map((branch) => branch.trim()).filter(Boolean),
+                        )),
+                      })!)}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="main, staging"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs sm:col-span-2">
+                    <span className="text-muted-foreground">Branches agents may push (comma-separated)</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.allowedPushBranches.join(", ")}
+                      onCommit={(value) => {
+                        const branches = value
+                          .split(",")
+                          .map((branch) => branch.trim())
+                          .filter(Boolean);
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            allowedPushBranches: Array.from(new Set([
+                              lightRepositoryPolicy.activeBranch,
+                              ...branches,
+                            ])),
+                          })!,
+                        );
+                      }}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="main, production"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Git remote</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.remoteName}
+                      onCommit={(remoteName) =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({ remoteName: remoteName.trim() || "origin" })!,
+                        )}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="origin"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Reservation lease (seconds)</span>
+                    <DraftInput
+                      value={String(lightRepositoryPolicy.reservationLeaseSeconds)}
+                      onCommit={(value) =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            reservationLeaseSeconds: Math.max(30, Math.min(86_400, Number.parseInt(value, 10) || 900)),
+                          })!,
+                        )}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="900"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs">
+                    <span className="text-muted-foreground">Maximum files per task</span>
+                    <DraftInput
+                      value={String(lightRepositoryPolicy.maxReservedFilesPerTask)}
+                      onCommit={(value) =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            maxReservedFilesPerTask: Math.max(1, Math.min(2_000, Number.parseInt(value, 10) || 100)),
+                          })!,
+                        )}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="100"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs sm:col-span-2">
+                    <span className="text-muted-foreground">Validation command</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.validationCommand ?? ""}
+                      onCommit={(validationCommand) =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({ validationCommand: validationCommand.trim() || null })!,
+                        )}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="pnpm test && pnpm typecheck"
+                    />
+                  </label>
+
+                  <label className="space-y-1 text-xs sm:col-span-2">
+                    <span className="text-muted-foreground">Validation pipeline (one command per line)</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.validationCommands.join("\n")}
+                      onCommit={(value) => commitField(
+                        "light_repository",
+                        updateLightRepositoryPolicy({
+                          validationCommands: value.split("\n").map((command) => command.trim()).filter(Boolean),
+                        })!,
+                      )}
+                      immediate
+                      className="min-h-20 w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder={"pnpm typecheck\npnpm test"}
+                    />
+                  </label>
+
+                  <div className="flex items-center justify-between gap-3 sm:col-span-2">
+                    <div>
+                      <div className="text-xs font-medium">Require a clean validation barrier</div>
+                      <p className="text-(length:--text-micro) text-muted-foreground">
+                        Validation waits until no other task owns files in this checkout.
+                      </p>
+                    </div>
+                    <ToggleSwitch
+                      aria-label="Require a clean validation barrier"
+                      checked={lightRepositoryPolicy.requireCleanValidationBarrier}
+                      onCheckedChange={() =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            requireCleanValidationBarrier: !lightRepositoryPolicy.requireCleanValidationBarrier,
+                          })!,
+                        )}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 sm:col-span-2">
+                    <div>
+                      <div className="text-xs font-medium">Human approval before deploy</div>
+                      <p className="text-(length:--text-micro) text-muted-foreground">
+                        Keep production effects in the Action Center before execution.
+                      </p>
+                    </div>
+                    <ToggleSwitch
+                      aria-label="Require human approval before deploy"
+                      checked={lightRepositoryPolicy.requireHumanApprovalForDeploy}
+                      onCheckedChange={() =>
+                        commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({
+                            requireHumanApprovalForDeploy: !lightRepositoryPolicy.requireHumanApprovalForDeploy,
+                          })!,
+                        )}
+                    />
+                  </div>
+
+                  {([
+                    ["allowAgentCommit", "Allow agent commits", "Agents may create brokered commits from files they own."],
+                    ["allowAgentPush", "Allow agent pushes", "Agents may push only to the allowlisted branches."],
+                    ["allowAgentMerge", "Allow agent merges", "Agents may run fast-forward merges through the broker."],
+                    ["requireHumanApprovalForMerge", "Require human approval for merge", "Agent merge requests stop until a human executes the approved merge."],
+                  ] as const).map(([key, label, description]) => (
+                    <div key={key} className="flex items-center justify-between gap-3 sm:col-span-2">
+                      <div>
+                        <div className="text-xs font-medium">{label}</div>
+                        <p className="text-(length:--text-micro) text-muted-foreground">{description}</p>
+                      </div>
+                      <ToggleSwitch
+                        aria-label={label}
+                        checked={lightRepositoryPolicy[key]}
+                        onCheckedChange={() => commitField(
+                          "light_repository",
+                          updateLightRepositoryPolicy({ [key]: !lightRepositoryPolicy[key] })!,
+                        )}
+                      />
+                    </div>
+                  ))}
+
+                  <label className="space-y-1 text-xs sm:col-span-2">
+                    <span className="text-muted-foreground">Ephemeral write roots (comma-separated)</span>
+                    <DraftInput
+                      value={lightRepositoryPolicy.ephemeralWriteRoots.join(", ")}
+                      onCommit={(value) => commitField(
+                        "light_repository",
+                        updateLightRepositoryPolicy({
+                          ephemeralWriteRoots: value.split(",").map((entry) => entry.trim()).filter(Boolean),
+                        })!,
+                      )}
+                      immediate
+                      className="w-full rounded border border-border bg-transparent px-2 py-1.5 font-mono outline-none"
+                      placeholder="tmp, .cache"
+                    />
+                  </label>
+
+                  <div className="space-y-2 border-t border-border/60 pt-3 sm:col-span-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-medium">File reservations</div>
+                        <p className="text-(length:--text-micro) text-muted-foreground">
+                          Active ownership, queued work, and expired locks for this shared checkout.
+                        </p>
+                      </div>
+                      {fileReservationsQuery.isFetching ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                      ) : null}
+                    </div>
+                    {fileReservationsQuery.isError ? (
+                      <p className="text-xs text-destructive">Failed to load file reservations.</p>
+                    ) : openFileReservations.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No files are reserved.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {openFileReservations.map((reservation) => (
+                          <div
+                            key={reservation.id}
+                            className="flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5"
+                          >
+                            <div className="min-w-0">
+                              <div className="truncate font-mono text-xs">{reservation.path}</div>
+                              <div className="text-(length:--text-micro) text-muted-foreground">
+                                Task {reservation.issueId.slice(0, 8)} · {reservation.status}
+                              </div>
+                            </div>
+                            {reservation.status === "orphaned" ? (
+                              <Button
+                                variant="outline"
+                                size="xs"
+                                className="h-6 shrink-0 px-2"
+                                disabled={forceReleaseReservation.isPending}
+                                onClick={() => {
+                                  const confirmed = window.confirm(
+                                    `Force-release ${reservation.path}? Only continue if the owning agent is no longer editing it.`,
+                                  );
+                                  if (confirmed) {
+                                    forceReleaseReservation.mutate({
+                                      issueId: reservation.issueId,
+                                      path: reservation.path,
+                                    });
+                                  }
+                                }}
+                              >
+                                Force release
+                              </Button>
+                            ) : (
+                              <Badge variant="ghost" className="shrink-0 text-(length:--text-nano) uppercase">
+                                {reservation.status}
+                              </Badge>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {forceReleaseReservation.isError ? (
+                      <p className="text-xs text-destructive">The lock could not be released.</p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </>
+        ) : null}
 
         {isolatedWorkspacesEnabled ? (
           <>

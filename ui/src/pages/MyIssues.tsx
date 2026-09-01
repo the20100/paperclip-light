@@ -36,7 +36,7 @@ export function MyIssues() {
 
   // Show issues that are not assigned (user-created or unassigned)
   const myIssues = (issues ?? []).filter(
-    (i) => !i.assigneeAgentId && !["done", "cancelled"].includes(i.status)
+    (i) => !i.assigneeAgentId && !["done", "failed", "cancelled"].includes(i.status)
   );
 
   return (

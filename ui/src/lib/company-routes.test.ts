@@ -88,11 +88,27 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  it("keeps Files and Terminal inside the active company", () => {
+    for (const route of ["/files", "/terminal"]) {
+      expect(isBoardPathWithoutPrefix(route)).toBe(true);
+      expect(extractCompanyPrefixFromPath(route)).toBeNull();
+      expect(applyCompanyPrefix(route, "PAP")).toBe(`/PAP${route}`);
+      expect(toCompanyRelativePath(`/PAP${route}`)).toBe(route);
+    }
+  });
+
   it("treats /audit as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/audit")).toBe(true);
     expect(extractCompanyPrefixFromPath("/audit")).toBeNull();
     expect(applyCompanyPrefix("/audit", "PAP")).toBe("/PAP/audit");
     expect(toCompanyRelativePath("/PAP/audit")).toBe("/audit");
+  });
+
+  it("treats Action Center as a company-scoped board route", () => {
+    expect(isBoardPathWithoutPrefix("/actions")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/actions")).toBeNull();
+    expect(applyCompanyPrefix("/actions", "PAP")).toBe("/PAP/actions");
+    expect(toCompanyRelativePath("/PAP/actions")).toBe("/actions");
   });
 
   it("treats /tools routes as board routes that need a company prefix", () => {

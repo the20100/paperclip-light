@@ -789,6 +789,7 @@ export function AgentDetail() {
     enabled: canFetchAgent,
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
+  const lightExecutionEnabled = companies.find((company) => company.id === resolvedCompanyId)?.executionProfile === "light";
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
@@ -1309,6 +1310,7 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             runLabel="Run Heartbeat"
+            showRunAction={!lightExecutionEnabled}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"

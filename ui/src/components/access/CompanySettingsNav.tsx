@@ -2,11 +2,13 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { useCompany } from "@/context/CompanyContext";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
+  { value: "light", label: "Light execution", href: "/company/settings/light" },
   { value: "export", label: "Export", href: "/company/export" },
   { value: "import", label: "Import", href: "/company/import" },
   { value: "members", label: "Members", href: "/company/settings/members" },
@@ -64,6 +66,10 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "general";
   }
 
+  if (pathname.includes("/company/settings/light")) {
+    return "light";
+  }
+
   if (pathname.includes("/company/settings/environments")) {
     return "instance-environments";
   }
@@ -96,11 +102,13 @@ export function CompanySettingsNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { hidden: hiddenSettings } = useHiddenSettings();
+  const { selectedCompany } = useCompany();
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
   const activeTab = getCompanySettingsTab(location.pathname);
   const visibleItems = items.filter((item) => {
+    if (item.value === "light" && selectedCompany?.executionProfile !== "light") return false;
     if (item.value === "import" && isCloud) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];
     return !hiddenKey || !hiddenSettings.has(hiddenKey);

@@ -922,6 +922,7 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummaries() });
   queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
 
   const agentId = readString(payload.agentId);
@@ -1077,6 +1078,7 @@ function invalidateActivityQueries(
 
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummaries() });
     queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
     // usageQuotaWindows is intentionally excluded: quota windows come from external provider

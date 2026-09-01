@@ -15,6 +15,7 @@ import {
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -94,6 +95,10 @@ describe("legacy adapter skill selection", () => {
     key: "company/example/reviewer",
     runtimeName: "reviewer",
   };
+  const lightOperationalEntry = {
+    key: PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY,
+    runtimeName: "paperclip-light",
+  };
 
   it("keeps the operational skill selected without a stored preference", () => {
     expect(resolveLegacyPaperclipDesiredSkillNames({}, [operationalEntry, optionalEntry])).toEqual([
@@ -121,6 +126,23 @@ describe("legacy adapter skill selection", () => {
 
   it("leaves the configurable resolver available for native runners", () => {
     expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual([]);
+  });
+
+  it("mounts the short operational skill instead of the legacy brief in Light mode", () => {
+    expect(resolveLegacyPaperclipDesiredSkillNames(
+      {
+        paperclipExecutionMode: "light",
+        paperclipSkillSync: { desiredSkills: [PAPERCLIP_OPERATIONAL_SKILL_KEY, optionalEntry.key] },
+      },
+      [operationalEntry, lightOperationalEntry, optionalEntry],
+    )).toEqual([PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY, optionalEntry.key]);
+  });
+
+  it("mounts the compact operational contract for native runners in Light mode", () => {
+    expect(resolvePaperclipDesiredSkillNames(
+      { paperclipExecutionMode: "light" },
+      [operationalEntry, lightOperationalEntry, optionalEntry],
+    )).toEqual([PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY]);
   });
 });
 
@@ -2422,6 +2444,20 @@ describe("selectPaperclipTaskMarkdown", () => {
         { resumedSession: true },
       ),
     ).toBe(compactMarkdown);
+  });
+
+  it("does not resend an unchanged brief when the Light context ledger excluded it", () => {
+    expect(
+      selectPaperclipTaskMarkdown(
+        {
+          paperclipTaskMarkdown: fullMarkdown,
+          paperclipTaskMarkdownCompact: compactMarkdown,
+          paperclipWake: wake("issue_commented"),
+          paperclipLightContextPlan: { omittedTaskBrief: true },
+        },
+        { resumedSession: true },
+      ),
+    ).toContain("task brief is unchanged");
   });
 
   it("falls back to the full markdown when no compact variant exists", () => {

@@ -24,6 +24,8 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { WorkbenchFiles } from "../components/WorkbenchFiles";
+import { WorkbenchTerminal } from "../components/WorkbenchTerminal";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
@@ -48,7 +50,7 @@ import {
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget" | "files" | "terminal";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -64,6 +66,8 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "overview") return "overview";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
+  if (tab === "files") return "files";
+  if (tab === "terminal") return "terminal";
   if (tab === "issues") return "list";
   if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
@@ -553,6 +557,14 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "files") {
+      navigate(`/projects/${canonicalProjectRef}/files`, { replace: true });
+      return;
+    }
+    if (activeTab === "terminal") {
+      navigate(`/projects/${canonicalProjectRef}/terminal`, { replace: true });
+      return;
+    }
     if (activeTab === "plugin-operations") {
       navigate(`/projects/${canonicalProjectRef}/plugin-operations`, { replace: true });
       return;
@@ -703,6 +715,12 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "files") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/files`} replace />;
+    }
+    if (cachedTab === "terminal") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/terminal`} replace />;
+    }
     if (cachedTab === "plugin-operations" && project?.managedByPlugin) {
       return <Navigate to={`/projects/${canonicalProjectRef}/plugin-operations`} replace />;
     }
@@ -746,6 +764,10 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
+    } else if (tab === "files") {
+      navigate(`/projects/${canonicalProjectRef}/files`);
+    } else if (tab === "terminal") {
+      navigate(`/projects/${canonicalProjectRef}/terminal`);
     } else if (tab === "plugin-operations") {
       navigate(`/projects/${canonicalProjectRef}/plugin-operations`);
     } else if (tab === "configuration") {
@@ -884,6 +906,8 @@ export function ProjectDetail() {
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
+            { value: "files", label: "Files" },
+            { value: "terminal", label: "Terminal" },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -957,6 +981,14 @@ export function ProjectDetail() {
             onSave={(amount) => budgetMutation.mutate(amount)}
           />
         </div>
+      ) : null}
+
+      {activeTab === "files" && resolvedCompanyId ? (
+        <WorkbenchFiles companyId={resolvedCompanyId} projectId={project.id} className="workbench-surface-project" />
+      ) : null}
+
+      {activeTab === "terminal" && resolvedCompanyId ? (
+        <WorkbenchTerminal companyId={resolvedCompanyId} projectId={project.id} className="workbench-surface-project" />
       ) : null}
 
       {activePluginTab && (

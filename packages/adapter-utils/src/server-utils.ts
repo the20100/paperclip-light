@@ -1487,14 +1487,27 @@ export function selectPaperclipTaskMarkdown(
 ): string {
   const full = asString(context?.paperclipTaskMarkdown, "").trim();
   if (!full) return "";
-  if (options.resumedSession !== true) return full;
+  const lightPlan = parseObject(context?.paperclipLightContextPlan);
+  const projectBrief = parseObject(context?.paperclipProjectBrief);
+  const projectMemory = parseObject(context?.paperclipProjectMemory);
+  const supportingSections = [
+    lightPlan.omittedProjectBrief === true ? "" : asString(projectBrief.text, "").trim(),
+    lightPlan.omittedProjectMemory === true ? "" : asString(projectMemory.text, "").trim(),
+  ].filter(Boolean);
+  const withSupportingContext = (taskMarkdown: string) => [...supportingSections, taskMarkdown]
+    .filter(Boolean)
+    .join("\n\n");
+  if (options.resumedSession !== true) return withSupportingContext(full);
+  if (lightPlan.omittedTaskBrief === true) {
+    return withSupportingContext("Paperclip Light: the task brief is unchanged and remains in this session. Use `pc task show $PAPERCLIP_TASK_ID` only if you need to refresh it.");
+  }
   const wake = normalizePaperclipWakePayload(context?.paperclipWake);
-  if (!wake) return full;
+  if (!wake) return withSupportingContext(full);
   if (isAssignmentShapedPaperclipWakeReason(wake.reason) || isPaperclipRecoveryWakePayload(context?.paperclipWake)) {
-    return full;
+    return withSupportingContext(full);
   }
   const compact = asString(context?.paperclipTaskMarkdownCompact, "").trim();
-  return compact || full;
+  return withSupportingContext(compact || full);
 }
 
 export function renderPaperclipWakePrompt(
@@ -3001,11 +3014,33 @@ export function resolvePaperclipDesiredSkillNames(
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  if (!preference.explicit) return [];
-  const desiredSkills = preference.desiredSkills
-    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
-    .filter(Boolean);
-  return Array.from(new Set(desiredSkills));
+  const desiredSkills = preference.explicit
+    ? preference.desiredSkills
+      .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+      .filter(Boolean)
+    : [];
+  const uniqueDesiredSkills = Array.from(new Set(desiredSkills));
+  if (config.paperclipExecutionMode !== "light") return uniqueDesiredSkills;
+
+  // Light mode always receives one compact operational contract, including
+  // native runners. Replace a stored full Paperclip skill rather than mounting
+  // both, while preserving every explicitly attached domain skill.
+  const lightEntry = availableEntries.find(
+    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY,
+  );
+  const fallbackEntry = availableEntries.find(
+    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
+  const operationalEntry = lightEntry ?? fallbackEntry;
+  if (!operationalEntry) return uniqueDesiredSkills;
+  return [
+    operationalEntry.key,
+    ...uniqueDesiredSkills.filter((key) => {
+      const normalized = key.trim().toLowerCase();
+      return normalized !== PAPERCLIP_OPERATIONAL_SKILL_KEY
+        && normalized !== PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY;
+    }),
+  ];
 }
 
 /**
@@ -3013,15 +3048,19 @@ export function resolvePaperclipDesiredSkillNames(
  * that skill mounted even when an agent predates skill preferences or carries
  * an explicit empty desired set. Native runners provide the same authority
  * through their protocol and must continue to use the configurable-only
- * resolver above.
+ * resolver above. Light mode is the exception: every runtime receives its
+ * compact operational contract because that contract is the task API.
  */
 export const PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip";
+export const PAPERCLIP_LIGHT_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip-light";
 
 export function resolveLegacyPaperclipDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
 ): string[] {
   const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const lightMode = config.paperclipExecutionMode === "light";
+  if (lightMode) return desiredSkills;
   const operationalEntry = availableEntries.find(
     (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
   );

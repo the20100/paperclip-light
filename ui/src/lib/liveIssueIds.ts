@@ -5,7 +5,7 @@ function isLiveRunStatus(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "failed", "cancelled"]);
 
 export function isTerminalIssueStatus(status: string | null | undefined): status is IssueStatus {
   return TERMINAL_ISSUE_STATUSES.has(status as IssueStatus);

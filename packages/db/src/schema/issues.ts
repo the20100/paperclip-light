@@ -73,6 +73,10 @@ export const issues = pgTable(
     unblockDescriptor: jsonb("unblock_descriptor").$type<IssueUnblockDescriptor | null>(),
     blockedTransitionAt: timestamp("blocked_transition_at", { withTimezone: true }),
     blockedOwnerNotifiedAt: timestamp("blocked_owner_notified_at", { withTimezone: true }),
+    pauseReason: text("pause_reason"),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    failureReason: text("failure_reason"),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -123,7 +127,7 @@ export const issues = pgTable(
           and ${table.originId} is not null
           and ${table.hiddenAt} is null
           and ${table.executionRunId} is not null
-          and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'blocked')`,
+          and ${table.status} in ('backlog', 'todo', 'in_progress', 'in_review', 'paused', 'blocked')`,
       ),
     activeLivenessRecoveryIncidentIdx: uniqueIndex("issues_active_liveness_recovery_incident_uq")
       .on(table.companyId, table.originKind, table.originId)

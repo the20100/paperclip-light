@@ -60,6 +60,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  lightCompanyConfigSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
@@ -3153,6 +3154,8 @@ function buildManifestFromPackageFiles(
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
           : readCompanyApprovalDefault(companyFrontmatter),
+      executionProfile: paperclipCompany.executionProfile === "light" ? "light" : "standard",
+      lightConfig: isPlainRecord(paperclipCompany.lightConfig) ? paperclipCompany.lightConfig : null,
       feedbackDataSharingEnabled:
         typeof paperclipCompany.feedbackDataSharingEnabled === "boolean"
           ? paperclipCompany.feedbackDataSharingEnabled
@@ -4684,6 +4687,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         company: stripEmptyValues({
           logoPath: companyLogoPath,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
+          executionProfile: company.executionProfile === "light" ? "light" : undefined,
+          lightConfig: company.executionProfile === "light" && isPlainRecord(company.lightConfig)
+            ? company.lightConfig
+            : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
           feedbackDataSharingConsentByUserId: company.feedbackDataSharingConsentByUserId ?? null,
@@ -5222,6 +5229,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
+    const importedLightConfig = sourceManifest.company?.lightConfig == null
+      ? null
+      : lightCompanyConfigSchema.parse(sourceManifest.company.lightConfig);
 
     if (include.agents) {
       const importedAgentSlugs = new Set(
@@ -5295,6 +5305,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
           : false,
+        executionProfile: include.company && mode === "board_full"
+          ? (sourceManifest.company?.executionProfile ?? "standard")
+          : "standard",
+        lightConfig: include.company && mode === "board_full"
+          ? importedLightConfig
+          : null,
         feedbackDataSharingEnabled: include.company
           ? (sourceManifest.company?.feedbackDataSharingEnabled ?? false)
           : false,
@@ -5330,6 +5346,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
+          executionProfile: sourceManifest.company.executionProfile ?? "standard",
+          lightConfig: importedLightConfig,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
             ? new Date(sourceManifest.company.feedbackDataSharingConsentAt)

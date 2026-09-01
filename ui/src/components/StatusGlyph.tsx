@@ -6,6 +6,8 @@ import {
   CircleDashed,
   CircleDot,
   CircleMinus,
+  CirclePause,
+  CircleX,
   RotateCw,
   type LucideIcon,
 } from "lucide-react";
@@ -39,8 +41,10 @@ export type StatusGlyphStatus =
   | "todo"
   | "in_progress"
   | "in_review"
+  | "paused"
   | "done"
   | "blocked"
+  | "failed"
   | "cancelled"
   | "in_queue";
 
@@ -50,8 +54,10 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   todo: Circle,
   in_progress: RotateCw,
   in_review: CircleDot,
+  paused: CirclePause,
   done: CircleCheck,
   blocked: CircleMinus,
+  failed: CircleX,
   cancelled: Ban,
   in_queue: CircleMinus,
 };

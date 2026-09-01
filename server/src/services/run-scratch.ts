@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const HEARTBEAT_RUN_SCRATCH_MARKER = ".paperclip-run-scratch.json";
 
@@ -25,12 +26,20 @@ export interface HeartbeatRunScratchEnvResult {
   tempKeysApplied: string[];
 }
 
+export interface PaperclipLightCliInstallation {
+  binDir: string;
+  executablePath: string;
+}
+
 export type HeartbeatRunScratchCleanupResult =
   | { removed: true; dir: string }
   | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" };
 
 const TEMP_ENV_KEYS = ["TMPDIR", "TEMP", "TMP"] as const;
 const ISSUE_SEGMENT_MAX_CHARS = 32;
+const PAPERCLIP_LIGHT_CLI_SOURCE = fileURLToPath(
+  new URL("./scripts/paperclip-light-cli.mjs", import.meta.url),
+);
 
 function sanitizePathSegment(value: string | null | undefined, fallback: string): string {
   const normalized = (value ?? "")
@@ -105,6 +114,7 @@ export async function prepareHeartbeatRunScratch(input: {
 export function buildHeartbeatRunScratchEnv(
   existingEnv: Record<string, unknown>,
   scratch: HeartbeatRunScratch,
+  options: { toolBinDirs?: string[] } = {},
 ): HeartbeatRunScratchEnvResult {
   const env: Record<string, string> = {
     PAPERCLIP_RUN_SCRATCH_DIR: scratch.dir,
@@ -119,7 +129,46 @@ export function buildHeartbeatRunScratchEnv(
     env[key] = scratch.dir;
     tempKeysApplied.push(key);
   }
+  const toolBinDirs = (options.toolBinDirs ?? []).filter((entry) => entry.trim().length > 0);
+  if (toolBinDirs.length > 0) {
+    const inheritedPath = typeof existingEnv.PATH === "string" && existingEnv.PATH.trim().length > 0
+      ? existingEnv.PATH
+      : process.env.PATH ?? "";
+    env.PATH = [...toolBinDirs, inheritedPath].filter(Boolean).join(path.delimiter);
+  }
   return { env, tempKeysApplied };
+}
+
+/**
+ * Install the dependency-free Light CLI into this run's private scratch PATH.
+ *
+ * The source lives beside the server service in both source checkouts and the
+ * published `dist/services/scripts` tree. Copying it per run avoids depending
+ * on a globally installed `paperclipai` package and gives every local adapter
+ * the same `pc` command without putting credentials on disk.
+ */
+export async function installPaperclipLightCli(
+  scratch: HeartbeatRunScratch,
+): Promise<PaperclipLightCliInstallation> {
+  const binDir = path.join(scratch.dir, "bin");
+  await fs.mkdir(binDir, { recursive: true, mode: 0o700 });
+
+  if (process.platform === "win32") {
+    const scriptPath = path.join(binDir, "paperclip-light-cli.mjs");
+    const executablePath = path.join(binDir, "pc.cmd");
+    await fs.copyFile(PAPERCLIP_LIGHT_CLI_SOURCE, scriptPath);
+    await fs.writeFile(
+      executablePath,
+      `@echo off\r\n"${process.execPath}" "%~dp0paperclip-light-cli.mjs" %*\r\n`,
+      { mode: 0o700 },
+    );
+    return { binDir, executablePath };
+  }
+
+  const executablePath = path.join(binDir, "pc");
+  await fs.copyFile(PAPERCLIP_LIGHT_CLI_SOURCE, executablePath);
+  await fs.chmod(executablePath, 0o700);
+  return { binDir, executablePath };
 }
 
 export async function cleanupHeartbeatRunScratch(input: {

@@ -18,6 +18,7 @@ export {
   createFileResourceLimiter,
   createFileResourceListLimiter,
 } from "./file-resources.js";
+export { lightExecutionRoutes } from "./light-execution.js";
 export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";
 export { onboardingSeedRoutes } from "./onboarding-seed.js";

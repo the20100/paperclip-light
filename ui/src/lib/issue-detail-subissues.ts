@@ -119,5 +119,5 @@ function isActionableStatus(status: IssueStatus): boolean {
 }
 
 function isTerminalStatus(status: IssueStatus): boolean {
-  return status === "done" || status === "cancelled";
+  return status === "done" || status === "failed" || status === "cancelled";
 }

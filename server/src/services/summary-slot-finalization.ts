@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { summarySlots } from "@paperclipai/db";
 import type { IssueStatus } from "@paperclipai/shared";
 
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "failed", "cancelled"]);
 
 interface TerminalGenerationIssue {
   id: string;

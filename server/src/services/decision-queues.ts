@@ -238,6 +238,7 @@ async function sourceIssueId(
     }
     case "productivity_review":
     case "blocker_attention":
+    case "file_reservation_alert":
     case "review": {
       const row = await db.select({ id: issues.id })
         .from(issues)

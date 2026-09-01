@@ -945,7 +945,7 @@ export function buildHostServices(
       && interaction.status !== "accepted"
     ) return;
     if (interaction.status === "expired") return;
-    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") return;
+    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") return;
 
     let planReviewInteraction: Record<string, unknown> | null = null;
     if (interaction.kind === "request_confirmation" && isRecord(interaction.payload)) {

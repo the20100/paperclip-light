@@ -169,7 +169,7 @@ export function connectionIntentService(db: Db) {
     ) {
       throw forbidden("Responsible user is no longer authorized for company write access");
     }
-    if (issue.status === "done" || issue.status === "cancelled") {
+    if (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") {
       throw conflict("Connection requests cannot be created on a closed task");
     }
     return { run, issue, agent };

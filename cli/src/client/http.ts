@@ -74,6 +74,13 @@ export class PaperclipApiClient {
     }, opts);
   }
 
+  postForm<T>(path: string, body: FormData, opts?: RequestOptions): Promise<T | null> {
+    return this.request<T>(path, {
+      method: "POST",
+      body,
+    }, opts);
+  }
+
   patch<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, {
       method: "PATCH",
@@ -119,7 +126,7 @@ export class PaperclipApiClient {
       ...toStringRecord(init.headers),
     };
 
-    if (init.body !== undefined) {
+    if (init.body !== undefined && !(init.body instanceof FormData)) {
       headers["content-type"] = headers["content-type"] ?? "application/json";
     }
 

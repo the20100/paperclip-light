@@ -22,6 +22,27 @@ export type {
   InteractionResolverKindGovernance,
 } from "./company.js";
 export type {
+  FileReservationStatus,
+  RepositoryOperationKind,
+  RepositoryOperationStatus,
+  FileReservation,
+  FileReservationConflict,
+  FileReservationResult,
+  RepositoryOperation,
+  LightExecutionEventStatus,
+  TaskReviewStatus,
+  ProjectMemoryStatus,
+  HumanActionStatus,
+  HumanActionKind,
+  TaskCheckpoint,
+  LightExecutionEvent,
+  TaskReview,
+  ProjectMemoryItem,
+  HumanAction,
+  RunContextComponent,
+  LightActionCenterItem,
+} from "./light-execution.js";
+export type {
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,

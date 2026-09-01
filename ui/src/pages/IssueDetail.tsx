@@ -89,7 +89,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { relativeTime, cn } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ProjectTile } from "../components/ProjectTile";
@@ -136,6 +136,8 @@ import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
+import { IssueCostSummaryStrip } from "../components/IssueCostSummaryStrip";
+import { IssueLightOperations } from "../components/IssueLightOperations";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGalleryModal";
@@ -410,15 +412,6 @@ function extractWorkspaceFileRefFromWorkProduct(
   if (!metadata) return null;
   const parsed = workspaceFileRefSchema.safeParse(metadata.resourceRef);
   return parsed.success ? parsed.data : null;
-}
-
-function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
-  if (!usage) return 0;
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-  }
-  return 0;
 }
 
 function truncate(text: string, max: number): string {
@@ -1477,78 +1470,9 @@ function IssueDetailActivityTab({
       issueId,
     ),
   });
-  const { data: issueTreeCostSummary } = useQuery({
-    queryKey: queryKeys.issues.costSummary(issueId),
-    queryFn: () => issuesApi.getCostSummary(issueId),
-    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(issueId),
-  });
   const initialLoading =
     (activityLoading && activity === undefined)
     || (linkedRunsLoading && linkedRuns === undefined);
-  const issueCostSummary = useMemo(() => {
-    let input = 0;
-    let output = 0;
-    let cached = 0;
-    let cost = 0;
-    let runtimeMs = 0;
-    let runCount = 0;
-    let hasCost = false;
-    let hasTokens = false;
-    const nowMs = Date.now();
-
-    for (const run of linkedRuns ?? []) {
-      const usage = asRecord(run.usageJson);
-      const result = asRecord(run.resultJson);
-      const runInput = usageNumber(usage, "inputTokens", "input_tokens");
-      const runOutput = usageNumber(usage, "outputTokens", "output_tokens");
-      const runCached = usageNumber(
-        usage,
-        "cachedInputTokens",
-        "cached_input_tokens",
-        "cache_read_input_tokens",
-      );
-      const runCost = visibleRunCostUsd(usage, result);
-      if (runCost > 0) hasCost = true;
-      if (runInput + runOutput + runCached > 0) hasTokens = true;
-      input += runInput;
-      output += runOutput;
-      cached += runCached;
-      cost += runCost;
-
-      if (run.startedAt) {
-        const startMs = new Date(run.startedAt).getTime();
-        const endMs = run.finishedAt ? new Date(run.finishedAt).getTime() : nowMs;
-        if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs) {
-          runtimeMs += endMs - startMs;
-          runCount += 1;
-        }
-      }
-    }
-
-    return {
-      input,
-      output,
-      cached,
-      cost,
-      totalTokens: input + output,
-      hasCost,
-      hasTokens,
-      runtimeMs,
-      runCount,
-      hasRuntime: runtimeMs > 0,
-    };
-  }, [linkedRuns]);
-  const issueTreeCostTokens =
-    (issueTreeCostSummary?.inputTokens ?? 0) + (issueTreeCostSummary?.outputTokens ?? 0);
-  const hasIssueTreeCost =
-    !!issueTreeCostSummary
-    && (issueTreeCostSummary.costCents > 0
-      || issueTreeCostTokens > 0
-      || issueTreeCostSummary.cachedInputTokens > 0
-      || issueTreeCostSummary.runtimeMs > 0
-      || issueTreeCostSummary.issueCount > 1);
-  const shouldShowCostSummary =
-    (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -1556,67 +1480,16 @@ function IssueDetailActivityTab({
 
   return (
     <>
-      {shouldShowCostSummary && (
-        <div className="mb-3 px-3 py-2 rounded-lg border border-border">
-          <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
-          {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !hasIssueTreeCost ? (
-            <div className="text-xs text-muted-foreground">No cost data yet.</div>
-          ) : (
-            <div className="space-y-1 text-xs text-muted-foreground tabular-nums">
-              <div className="flex flex-wrap gap-3">
-                <span className="font-medium text-foreground">This task</span>
-                {issueCostSummary.hasCost ? (
-                  <span className="font-medium text-foreground">
-                    ${issueCostSummary.cost.toFixed(4)}
-                  </span>
-                ) : null}
-                {issueCostSummary.hasTokens ? (
-                  <span>
-                    Tokens {formatTokens(issueCostSummary.totalTokens)}
-                    {issueCostSummary.cached > 0
-                      ? ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)}, cached ${formatTokens(issueCostSummary.cached)})`
-                      : ` (in ${formatTokens(issueCostSummary.input)}, out ${formatTokens(issueCostSummary.output)})`}
-                  </span>
-                ) : null}
-                {issueCostSummary.hasRuntime ? (
-                  <span>
-                    Runtime {formatDurationMs(issueCostSummary.runtimeMs)}
-                    {` (${issueCostSummary.runCount} run${issueCostSummary.runCount === 1 ? "" : "s"})`}
-                  </span>
-                ) : null}
-                {!issueCostSummary.hasCost && !issueCostSummary.hasTokens && !issueCostSummary.hasRuntime ? (
-                  <span>No direct cost data.</span>
-                ) : null}
-              </div>
-              {hasIssueTreeCost && issueTreeCostSummary ? (
-                <div className="flex flex-wrap gap-3">
-                  <span className="font-medium text-foreground">
-                    Including sub-tasks {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
-                      style: "currency",
-                      currency: "USD",
-                      minimumFractionDigits: 4,
-                      maximumFractionDigits: 4,
-                    })}
-                  </span>
-                  <span>
-                    Tokens {formatTokens(issueTreeCostTokens)}
-                    {issueTreeCostSummary.cachedInputTokens > 0
-                      ? ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)}, cached ${formatTokens(issueTreeCostSummary.cachedInputTokens)})`
-                      : ` (in ${formatTokens(issueTreeCostSummary.inputTokens)}, out ${formatTokens(issueTreeCostSummary.outputTokens)})`}
-                  </span>
-                  {issueTreeCostSummary.runCount > 0 ? (
-                    <span>
-                      Runtime {formatDurationMs(issueTreeCostSummary.runtimeMs)}
-                      {` (${issueTreeCostSummary.runCount} run${issueTreeCostSummary.runCount === 1 ? "" : "s"})`}
-                    </span>
-                  ) : null}
-                  <span>{issueTreeCostSummary.issueCount} task{issueTreeCostSummary.issueCount === 1 ? "" : "s"}</span>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="mb-3 px-3 py-2 rounded-lg border border-border">
+        <IssueCostSummaryStrip
+          issueId={issueId}
+          hasDescendants={childIssues.length > 0}
+          hasLiveRuns={hasLiveRuns}
+        />
+      </div>
+      <div className="mb-3">
+        <IssueLightOperations issueId={issueId} projectId={issue.projectId ?? null} companyId={companyId} />
+      </div>
       <div className="mb-3">
         <IssueRunLedger
           issueId={issueId}
@@ -4419,7 +4292,7 @@ export function IssueDetail() {
   const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
   const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
   const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
-  const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
+  const isTerminalIssue = issue.status === "done" || issue.status === "failed" || issue.status === "cancelled";
   const isAgentOwnedNonTerminalIssue = Boolean(issue.assigneeAgentId) && !isTerminalIssue;
   const canPauseLeafWork = canManageTreeControl && childIssues.length === 0 && !activePauseHold && !isTerminalIssue;
   const canResumeLeafWork = canManageTreeControl && childIssues.length === 0 && activePauseHold?.isRoot === true;
@@ -4469,6 +4342,13 @@ export function IssueDetail() {
     ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
     : null;
   const composerHint = pausedComposerHint ?? reopenComposerHint;
+  const lightStatusExplanation = issue.status === "failed"
+    ? issue.failureReason
+    : issue.status === "paused"
+      ? issue.pauseReason === "file_reservation"
+        ? "Waiting for one or more reserved files to become available. Paperclip will resume the agent automatically."
+        : issue.pauseReason
+      : null;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold ? "hold" : "active_run";
   const canApplyTreeControl =
     Boolean(treeControlPreview)
@@ -4883,6 +4763,32 @@ export function IssueDetail() {
           as="h2"
           className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
+
+        {taskChatShellEnabled ? (
+          <div className="space-y-2">
+            <IssueCostSummaryStrip
+              issueId={issue.id}
+              hasDescendants={childIssues.length > 0}
+              hasLiveRuns={hasLiveRuns}
+            />
+            <IssueLightOperations issueId={issue.id} projectId={issue.projectId ?? null} companyId={issue.companyId} />
+          </div>
+        ) : null}
+
+        {lightStatusExplanation ? (
+          <div
+            role="status"
+            className={cn(
+              "rounded-md border px-3 py-2 text-xs",
+              issue.status === "failed"
+                ? "border-destructive/30 bg-destructive/5 text-destructive"
+                : "border-border bg-muted/40 text-muted-foreground",
+            )}
+          >
+            <span className="font-medium">{issue.status === "failed" ? "Failed" : "Paused"}:</span>{" "}
+            {lightStatusExplanation}
+          </div>
+        ) : null}
 
         {taskChatShellEnabled ? subTasksTree : null}
 

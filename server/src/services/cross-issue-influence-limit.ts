@@ -46,15 +46,19 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
   now?: Date;
+  cap?: number;
 }): CrossIssueInfluenceDecision {
   const now = input.now ?? new Date();
   const mode = now >= CROSS_ISSUE_INFLUENCE_ENFORCE_AT ? "enforce" : "log_only";
   const nextCount = input.priorCount + 1;
+  const cap = Number.isInteger(input.cap) && Number(input.cap) >= 0
+    ? Number(input.cap)
+    : CROSS_ISSUE_INFLUENCE_LIMIT;
   return {
-    allowed: mode === "log_only" || nextCount <= CROSS_ISSUE_INFLUENCE_LIMIT,
+    allowed: mode === "log_only" || nextCount <= cap,
     mode,
     count: nextCount,
-    cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+    cap,
     enforceAt: CROSS_ISSUE_INFLUENCE_ENFORCE_AT.toISOString(),
   };
 }
@@ -78,6 +82,7 @@ export async function observeCrossIssueInfluence(
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
     now?: Date;
+    cap?: number;
   },
 ): Promise<CrossIssueInfluenceDecision | null> {
   // API-key callers control the run header. Reject malformed UUIDs before the
@@ -127,7 +132,7 @@ export async function observeCrossIssueInfluence(
         eq(activityLog.action, CROSS_ISSUE_INFLUENCE_ACTIVITY),
       ))
       .then((rows) => Number(rows[0]?.count ?? 0));
-    const decision = evaluateCrossIssueInfluenceLimit({ priorCount, now: input.now });
+    const decision = evaluateCrossIssueInfluenceLimit({ priorCount, now: input.now, cap: input.cap });
 
     await tx.insert(activityLog).values({
       companyId: input.companyId,

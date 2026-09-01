@@ -30,7 +30,19 @@ export interface AgentModelProfileConfig {
 }
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {
+  executionMode?: "inherit" | "standard" | "light";
   modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
+  lightRouting?: {
+    mode?: "fixed" | "auto";
+    primaryModel?: string;
+    requiredCapabilities?: Array<"code" | "tools" | "vision" | "browser" | "reasoning" | "long_context">;
+    fallbackEnabled?: boolean;
+    onUnavailable?: "fallback" | "pause";
+    fallbackModels?: Array<{
+      model: string;
+      capabilities?: Array<"code" | "tools" | "vision" | "browser" | "reasoning" | "long_context">;
+    }>;
+  };
 }
 
 export type AgentInstructionsBundleMode = "managed" | "external";

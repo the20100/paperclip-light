@@ -15,6 +15,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "blocker_attention",
   "review",
   "failed_run",
+  "file_reservation_alert",
   "budget_alert",
   "agent_error_alert",
 ] as const;

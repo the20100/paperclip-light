@@ -34,6 +34,10 @@ export interface IssueCostSummary {
   issueCount: number;
   includeDescendants: boolean;
   costCents: number;
+  /** non-subscription usage events whose provider/model price was not available */
+  unpricedEventCount: number;
+  /** usage events covered by a fixed provider subscription */
+  subscriptionIncludedEventCount: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

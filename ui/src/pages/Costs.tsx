@@ -9,9 +9,10 @@ import type {
   FinanceEvent,
   QuotaWindow,
 } from "@paperclipai/shared";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { lightExecutionApi } from "../api/lightExecution";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -241,6 +242,13 @@ export function Costs() {
       return { summary, byAgent, byProject, byAgentModel };
     },
     enabled: !!selectedCompanyId && customReady,
+  });
+  const { data: qualityData } = useQuery({
+    queryKey: ["light", "quality-summary", companyId],
+    queryFn: () => lightExecutionApi.qualitySummary(companyId),
+    enabled: !!selectedCompanyId,
+    retry: false,
+    refetchInterval: 30_000,
   });
 
   const { data: financeData, isLoading: financeLoading, error: financeError } = useQuery({
@@ -653,6 +661,21 @@ export function Costs() {
                     />
                   ))}
                 </div>
+              ) : null}
+
+              {qualityData ? (
+                <Card>
+                  <CardHeader className="px-5 pb-2 pt-5">
+                    <CardTitle className="flex items-center gap-2 text-base"><CheckCircle2 className="h-4 w-4" /> Cost per accepted task</CardTitle>
+                    <CardDescription>Delivery quality and intervention load over the last {qualityData.windowDays} days.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 px-5 pb-5 pt-2 sm:grid-cols-2 xl:grid-cols-4">
+                    <MetricTile label="Accepted tasks" value={String(qualityData.acceptedTasks)} subtitle={`${qualityData.firstPassAccepted} accepted on first review`} icon={CheckCircle2} />
+                    <MetricTile label="Tokens / accepted" value={qualityData.tokensPerAcceptedTask == null ? "—" : formatTokens(qualityData.tokensPerAcceptedTask)} subtitle={`${formatTokens(qualityData.acceptedTaskTokens)} accepted-task tokens`} icon={Coins} />
+                    <MetricTile label="Cost / accepted" value={qualityData.costCentsPerAcceptedTask == null ? "—" : formatCents(qualityData.costCentsPerAcceptedTask)} subtitle={`${formatCents(qualityData.acceptedTaskCostCents)} total accepted-task spend`} icon={DollarSign} />
+                    <MetricTile label="Human interventions" value={String(qualityData.humanInterventions)} subtitle={`${qualityData.fallbackRuns} model fallbacks · ${qualityData.failedTasks} failed tasks`} icon={ReceiptText} />
+                  </CardContent>
+                </Card>
               ) : null}
 
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">

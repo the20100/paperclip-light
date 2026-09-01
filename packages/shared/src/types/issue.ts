@@ -842,6 +842,10 @@ export interface Issue {
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
+  pauseReason?: string | null;
+  pausedAt?: Date | null;
+  failureReason?: string | null;
+  failedAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;

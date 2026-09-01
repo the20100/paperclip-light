@@ -36,6 +36,8 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   logoPath: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  executionProfile?: "standard" | "light";
+  lightConfig?: Record<string, unknown> | null;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
   feedbackDataSharingConsentByUserId: string | null;

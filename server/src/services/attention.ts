@@ -13,6 +13,7 @@ import {
   decisions,
   heartbeatRunEvents,
   heartbeatRuns,
+  fileReservations,
   inboxDismissals,
   invites,
   issueApprovals,
@@ -77,6 +78,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "blocker_attention",
   "review",
   "failed_run",
+  "file_reservation_alert",
   "budget_alert",
   "agent_error_alert",
 ];
@@ -90,22 +92,23 @@ const SEVERITY_RANK: Record<AttentionSeverity, number> = {
 
 const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   failed_run: 0,
-  recovery_action: 1,
-  blocker_attention: 2,
-  budget_alert: 3,
-  agent_error_alert: 4,
-  approval: 5,
-  decision: 6,
-  issue_thread_interaction: 7,
-  review: 8,
-  productivity_review: 9,
-  join_request: 10,
+  file_reservation_alert: 1,
+  recovery_action: 2,
+  blocker_attention: 3,
+  budget_alert: 4,
+  agent_error_alert: 5,
+  approval: 6,
+  decision: 7,
+  issue_thread_interaction: 8,
+  review: 9,
+  productivity_review: 10,
+  join_request: 11,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
+const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "failed", "cancelled"] as const;
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
@@ -983,7 +986,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
           inArray(issueRelations.issueId, chunk),
           eq(issues.companyId, companyId),
           isNull(issues.hiddenAt),
-          notInArray(issues.status, ["done", "cancelled"]),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
         ));
       const childRowsPromise: Promise<BlockedWorkEdge[]> = includeChildren
         ? db
@@ -996,7 +999,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
             isNull(issues.hiddenAt),
-            notInArray(issues.status, ["done", "cancelled"]),
+            notInArray(issues.status, ["done", "failed", "cancelled"]),
           ))
         : Promise.resolve([]);
       const [dependentRows, childRows] = await Promise.all([dependentRowsPromise, childRowsPromise]);
@@ -1720,6 +1723,72 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: null,
           ...issueContext(issue),
           detail: genericDetail(review.title, issueImages(reviewImageMap, review.id)),
+        }));
+      }
+
+      const orphanedReservationRows = await db
+        .select({
+          id: fileReservations.id,
+          requestId: fileReservations.requestId,
+          issueId: fileReservations.issueId,
+          path: fileReservations.normalizedPath,
+          leaseExpiresAt: fileReservations.leaseExpiresAt,
+          createdAt: fileReservations.createdAt,
+          updatedAt: fileReservations.updatedAt,
+        })
+        .from(fileReservations)
+        .where(and(
+          eq(fileReservations.companyId, companyId),
+          eq(fileReservations.status, "orphaned"),
+        ))
+        .orderBy(desc(fileReservations.updatedAt), asc(fileReservations.path));
+      const orphanedByRequest = new Map<string, typeof orphanedReservationRows>();
+      for (const reservation of orphanedReservationRows) {
+        const group = orphanedByRequest.get(reservation.requestId) ?? [];
+        group.push(reservation);
+        orphanedByRequest.set(reservation.requestId, group);
+      }
+      const orphanedIssueMap = await issueSummaryMap(
+        db,
+        companyId,
+        [...new Set(orphanedReservationRows.map((row) => row.issueId))],
+      );
+      for (const [requestId, reservations] of orphanedByRequest) {
+        const first = reservations[0]!;
+        const issue = orphanedIssueMap.get(first.issueId) ?? null;
+        const pathSummary = reservations.length === 1
+          ? first.path
+          : `${first.path} and ${reservations.length - 1} more`;
+        add(createItem({
+          companyId,
+          sourceKind: "file_reservation_alert",
+          subject: issue
+            ? issueSubject(prefix, issue)
+            : {
+                kind: "issue",
+                id: first.issueId,
+                companyId,
+                title: "Task with orphaned file lock",
+                identifier: null,
+                status: "paused",
+                href: `/${prefix}/issues/${first.issueId}`,
+              },
+          whyNow: "A file reservation lease expired and still blocks other agents. Inspect the task, then force-release the lock if its owner is no longer working.",
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect task", description: "Confirm whether the owner is still working." },
+            { id: "force_release", label: "Force release", description: "Release the orphaned paths from the project configuration." },
+          ),
+          inlineResolvable: false,
+          entryRule: "file_reservations.status = 'orphaned'",
+          exitRule: "The reservation is renewed, released, or cancelled.",
+          dedupKey: `file_reservation:${requestId}`,
+          severity: "high",
+          activityAt: toIso(first.updatedAt),
+          createdAt: toIso(first.createdAt),
+          updatedAt: toIso(first.updatedAt),
+          relatedIssue: issue ? issueSubject(prefix, issue) : null,
+          ...issueContext(issue),
+          detail: genericDetail(`Orphaned lock: ${pathSummary}`, []),
         }));
       }
 

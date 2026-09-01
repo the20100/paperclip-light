@@ -8,6 +8,7 @@ import {
   activityLog,
   agents,
   approvals,
+  companies,
   companyMemberships,
   documents,
   executionWorkspaces,
@@ -129,6 +130,8 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  lightFileReservationService,
+  lightTaskCheckpointService,
   type ActivityPublication,
   type IssueFilters,
   clampIssueListLimit,
@@ -167,6 +170,7 @@ import {
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
+import { shouldWakeAssigneeForIssueComment } from "./issues-comment-wakeup.js";
 import {
   formatAttachmentSize,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
@@ -1851,8 +1855,8 @@ function summarizeExecutionParticipants(
   );
 }
 
-function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
-  return status === "done" || status === "cancelled";
+function isClosedIssueStatus(status: string | null | undefined): status is "done" | "failed" | "cancelled" {
+  return status === "done" || status === "failed" || status === "cancelled";
 }
 
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
@@ -1905,7 +1909,7 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
-  return status === "done" || status === "cancelled" || status === "blocked" || status === "todo" || status === "in_progress";
+  return status === "done" || status === "failed" || status === "cancelled" || status === "blocked" || status === "todo" || status === "in_progress";
 }
 
 // Log-class comment from the assignee agent on a terminal (done/cancelled)
@@ -2847,6 +2851,8 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
+  const lightReservationsSvc = lightFileReservationService(db);
+  const lightCheckpointsSvc = lightTaskCheckpointService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -2947,6 +2953,18 @@ export function issueRoutes(
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
+    const companyExecution = await db
+      .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+      .from(companies)
+      .where(eq(companies.id, issue.companyId))
+      .then((rows) => rows[0] ?? null);
+    const configuredCap = companyExecution?.executionProfile === "light"
+      && companyExecution.lightConfig
+      && typeof companyExecution.lightConfig === "object"
+      && !Array.isArray(companyExecution.lightConfig)
+      && Number.isInteger((companyExecution.lightConfig as Record<string, unknown>).maxCrossAgentMentionsPerTree)
+        ? Number((companyExecution.lightConfig as Record<string, unknown>).maxCrossAgentMentionsPerTree)
+        : undefined;
     const decision = await observeCrossIssueInfluence(db, {
       companyId: issue.companyId,
       runId: req.actor.runId,
@@ -2955,6 +2973,7 @@ export function issueRoutes(
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
+      cap: configuredCap,
     });
     if (!decision || decision.allowed) return true;
 
@@ -3246,7 +3265,7 @@ export function issueRoutes(
     blockedToTodoRecovery?: boolean;
   }): Promise<string | null> {
     const { issue } = input;
-    if (issue.status === "done" || issue.status === "cancelled") {
+    if (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled") {
       return `Recovery action became stale because the source issue reached ${issue.status}.`;
     }
     if (input.blockedToTodoRecovery === true) {
@@ -6926,7 +6945,7 @@ export function issueRoutes(
               eq(issueRelations.companyId, existing.companyId),
               eq(issueRelations.relatedIssueId, existing.id),
               eq(issueRelations.type, "blocks"),
-              notInArray(issueRows.status, ["done", "cancelled"]),
+              notInArray(issueRows.status, ["done", "failed", "cancelled"]),
             ),
           )
           .limit(1);
@@ -9451,7 +9470,7 @@ export function issueRoutes(
       && req.body.reviewPolicy !== existing.reviewPolicy;
     const reviewVerdictRequested =
       existing.status === "in_review"
-      && (updateFields.status === "done" || updateFields.status === "cancelled");
+      && (updateFields.status === "done" || updateFields.status === "failed" || updateFields.status === "cancelled");
     const reviewPolicySensitiveMutationRequested =
       req.body.reviewPolicy !== undefined
       || updateFields.status === "done"
@@ -9762,7 +9781,7 @@ export function issueRoutes(
         ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
           eq(issueRows.companyId, existing.companyId),
           inArray(issueRows.id, requestedBlockerIds),
-          notInArray(issueRows.status, ["done", "cancelled"]),
+          notInArray(issueRows.status, ["done", "failed", "cancelled"]),
         )).limit(1).then((rows) => rows.length > 0)
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
       const [pendingInteraction, pendingApproval] = await Promise.all([
@@ -9880,7 +9899,7 @@ export function issueRoutes(
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
     const shouldCollectTerminalIssueActions =
-      updateFields.status === "done" || updateFields.status === "cancelled";
+      updateFields.status === "done" || updateFields.status === "failed" || updateFields.status === "cancelled";
     const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
       if (tx) {
         if (shouldCollectCompletionPublication) {
@@ -9904,7 +9923,7 @@ export function issueRoutes(
         && req.body.reviewPolicy !== lockedExisting.reviewPolicy;
       const lockedReviewVerdictRequested =
         lockedExisting.status === "in_review"
-        && (updateFields.status === "done" || updateFields.status === "cancelled");
+        && (updateFields.status === "done" || updateFields.status === "failed" || updateFields.status === "cancelled");
       if (
         (lockedReviewVerdictRequested || lockedPolicyChangeRequested)
         && lockedExisting.reviewPolicy != null
@@ -10056,6 +10075,42 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+    const enteredResourceReleaseState =
+      existing.status !== issue.status
+      && ["paused", "done", "failed", "cancelled"].includes(issue.status);
+    if (enteredResourceReleaseState && issue.projectId) {
+      const transitionedIssue = issue;
+      try {
+        const reservations = await lightReservationsSvc.list(transitionedIssue.projectId!, { issueId: transitionedIssue.id, status: "active" });
+        const activePaths = [...new Set(reservations.rows.map((row) => row.normalizedPath))];
+        if (activePaths.length > 0 && transitionedIssue.assigneeAgentId) {
+          await lightCheckpointsSvc.capture(transitionedIssue.projectId!, transitionedIssue.id, {
+            paths: activePaths,
+            agentId: transitionedIssue.assigneeAgentId,
+            runId: actor.runId,
+            summary: `Automatic checkpoint before task entered ${transitionedIssue.status}`,
+          }, actor).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.includes("No local changes")) {
+              logger.warn({ error, issueId: transitionedIssue.id }, "failed to capture Light lifecycle checkpoint");
+            }
+          });
+        }
+        await lightReservationsSvc.releaseForIssueLifecycle(
+          transitionedIssue.projectId!,
+          transitionedIssue.id,
+          `task_${transitionedIssue.status}`,
+        );
+      } catch (error) {
+        const details = error instanceof HttpError && error.details && typeof error.details === "object"
+          ? error.details as Record<string, unknown>
+          : null;
+        const code = typeof details?.code === "string" ? details.code : null;
+        if (code !== "light_repository_disabled" && code !== "light_repository_workspace_missing") {
+          logger.warn({ error, issueId: transitionedIssue.id }, "failed to release Light task resources during lifecycle transition");
+        }
+      }
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
     await flushIssuePostCommitActions(postCommitIssueActions);
@@ -10425,7 +10480,7 @@ export function issueRoutes(
     if (
       issue.harnessKind === "skill_test" &&
       existing.status !== issue.status &&
-      (issue.status === "done" || issue.status === "cancelled")
+      (issue.status === "done" || issue.status === "failed" || issue.status === "cancelled")
     ) {
       const completedRun = await companySkillsSvc.completeTestRunForIssue({
         companyId: issue.companyId,
@@ -10882,7 +10937,7 @@ export function issueRoutes(
       }
 
       const becameTerminal =
-        !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+        !["done", "failed", "cancelled"].includes(existing.status) && ["done", "failed", "cancelled"].includes(issue.status);
       if (becameTerminal) {
         const expiredInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(issue, {
           agentId: actor.agentId,
@@ -12250,6 +12305,8 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
+    const commentCompany = await companiesSvc.getById(issue.companyId);
+    const lightExecutionEnabled = commentCompany?.executionProfile === "light";
     if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
       await auditAgentIssueCommentAttributionSpoof({
         db,
@@ -12664,6 +12721,7 @@ export function issueRoutes(
           ? { directParentReportGrant: true }
           : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+        ...(lightExecutionEnabled ? { executionProfile: "light", ordinaryCommentWake: "explicit_only" } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(scheduledRetrySupersededByComment
           ? {
@@ -12806,7 +12864,13 @@ export function issueRoutes(
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
       const skipWake = selfComment || isClosedIssueStatus(wakeIssueSnapshot.status);
-      if (assigneeId && (reopened || !skipWake)) {
+      const shouldWakeAssignee = shouldWakeAssigneeForIssueComment({
+        lightExecutionEnabled,
+        reopened,
+        resumeRequested: effectiveResumeRequested === true,
+        skipWake,
+      });
+      if (assigneeId && shouldWakeAssignee) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",
@@ -12918,8 +12982,8 @@ export function issueRoutes(
       }
 
       const becameTerminal =
-        !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
-        ["done", "cancelled"].includes(currentIssue.status);
+        !["done", "failed", "cancelled"].includes(issueBeforeCommentDecision.status) &&
+        ["done", "failed", "cancelled"].includes(currentIssue.status);
       if (becameTerminal) {
         const expiredInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(currentIssue, {
           agentId: actor.agentId,

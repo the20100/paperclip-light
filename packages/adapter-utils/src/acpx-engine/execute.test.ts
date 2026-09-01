@@ -1211,6 +1211,55 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it("allows only selected Codex skills in Paperclip Light mode", async () => {
+    const root = await makeTempRoot();
+    const cwd = path.join(root, "workspace");
+    const fakeHome = path.join(root, "home");
+    const codexHome = path.join(root, "codex-home");
+    const skillRoot = path.join(root, "runtime-skills");
+    const selected = await createSkill(skillRoot, "paperclip-light");
+    const ambientProjectSkill = path.join(cwd, ".agents", "skills", "project-noise");
+    const ambientHomeSkill = path.join(fakeHome, ".agents", "skills", "home-noise");
+    const ambientSystemSkill = path.join(codexHome, "skills", ".system", "system-noise");
+    const ambientPluginSkill = path.join(codexHome, "plugins", "cache", "demo", "skills", "plugin-noise");
+    await Promise.all([
+      ambientProjectSkill,
+      ambientHomeSkill,
+      ambientSystemSkill,
+      ambientPluginSkill,
+    ].map((dir) => fs.mkdir(dir, { recursive: true })));
+    await Promise.all([
+      ambientProjectSkill,
+      ambientHomeSkill,
+      ambientSystemSkill,
+      ambientPluginSkill,
+    ].map((dir) => fs.writeFile(path.join(dir, "SKILL.md"), "# ambient\n", "utf8")));
+
+    const { logs, meta } = await runExecutor({
+      agent: "codex",
+      cwd,
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome, HOME: fakeHome },
+      paperclipExecutionMode: "light",
+      paperclipRuntimeSkills: [selected],
+      paperclipSkillSync: { desiredSkills: [selected.key] },
+    });
+
+    const codexConfig = JSON.parse(
+      String((meta[0]?.env as Record<string, string>).CODEX_CONFIG),
+    ) as { skills: { config: Array<{ path: string; enabled: boolean }> } };
+    const overrides = new Map(codexConfig.skills.config.map((entry) => [entry.path, entry.enabled]));
+    expect(overrides.get(path.join(codexHome, "skills", selected.runtimeName))).toBe(true);
+    expect(overrides.get(ambientProjectSkill)).toBe(false);
+    expect(overrides.get(ambientHomeSkill)).toBe(false);
+    expect(overrides.get(ambientSystemSkill)).toBe(false);
+    expect(overrides.get(ambientPluginSkill)).toBe(false);
+    expect(logs).toContainEqual({
+      stream: "stdout",
+      text: "[paperclip] Paperclip Light Codex skill allowlist enabled 1 selected skill(s) and disabled 4 ambient skill(s).\n",
+    });
+  });
+
   it.skipIf(process.platform === "win32")("keeps the operational skill in an ACPX Codex home after an empty replacement", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");

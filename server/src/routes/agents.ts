@@ -14,6 +14,7 @@ import {
   createAgentSchema,
   deriveAgentUrlKey,
   isUuidLike,
+  lightCompanyConfigSchema,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
@@ -3581,7 +3582,11 @@ export function agentRoutes(
       return;
     }
 
-    const requiresApproval = company.requireBoardApprovalForNewAgents;
+    const lightConfig = company.executionProfile === "light"
+      ? lightCompanyConfigSchema.parse(company.lightConfig ?? {})
+      : null;
+    const requiresApproval = company.requireBoardApprovalForNewAgents
+      || (req.actor.type === "agent" && lightConfig?.allowAgentCreationWithoutApproval !== true);
     const status = requiresApproval ? "pending_approval" : "idle";
     const createdAgent = await svc.create(
       companyId,
@@ -3727,7 +3732,13 @@ export function agentRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    if (company.requireBoardApprovalForNewAgents) {
+    const lightConfig = company.executionProfile === "light"
+      ? lightCompanyConfigSchema.parse(company.lightConfig ?? {})
+      : null;
+    if (
+      company.requireBoardApprovalForNewAgents
+      || (req.actor.type === "agent" && lightConfig?.allowAgentCreationWithoutApproval !== true)
+    ) {
       throw conflict(
         "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
       );
