@@ -9,6 +9,7 @@ import {
   agents,
   fileReservations,
   heartbeatRuns,
+  humanActions,
   issues,
   projects,
   projectWorkspaces,
@@ -192,7 +193,7 @@ async function resolveScope(db: Db, projectId: string) {
   if (!canonicalCwd) throw unprocessable("The primary project workspace path is unavailable");
   const gitDir = await fs.stat(path.join(canonicalCwd, ".git")).catch(() => null);
   if (!gitDir) throw unprocessable("The primary project workspace is not a Git checkout");
-  return { project, policy, workspace, cwd: canonicalCwd };
+  return { project, policy, workspace, cwd: canonicalCwd, workspaceScopeKey: canonicalCwd };
 }
 
 async function resolveIssueAndAgent(input: {
@@ -246,12 +247,18 @@ async function validateRun(input: {
   }
 }
 
-async function markExpiredReservationsOrphaned(tx: any, projectId: string, now: Date) {
+async function markExpiredReservationsOrphaned(
+  tx: any,
+  companyId: string,
+  workspaceScopeKey: string,
+  now: Date,
+) {
   await tx
     .update(fileReservations)
     .set({ status: "orphaned", updatedAt: now })
     .where(and(
-      eq(fileReservations.projectId, projectId),
+      eq(fileReservations.companyId, companyId),
+      eq(fileReservations.workspaceScopeKey, workspaceScopeKey),
       eq(fileReservations.status, "active"),
       lte(fileReservations.leaseExpiresAt, now),
     ));
@@ -324,8 +331,8 @@ function mergeExecutionState(existing: unknown, patch: Record<string, unknown>) 
 }
 
 async function promoteWaitingReservations(tx: any, input: {
-  projectId: string;
-  projectWorkspaceId: string;
+  companyId: string;
+  workspaceScopeKey: string;
   leaseSeconds: number;
   now: Date;
 }) {
@@ -333,16 +340,16 @@ async function promoteWaitingReservations(tx: any, input: {
     .select()
     .from(fileReservations)
     .where(and(
-      eq(fileReservations.projectId, input.projectId),
-      eq(fileReservations.projectWorkspaceId, input.projectWorkspaceId),
+      eq(fileReservations.companyId, input.companyId),
+      eq(fileReservations.workspaceScopeKey, input.workspaceScopeKey),
       inArray(fileReservations.status, [...ACTIVE_RESERVATION_STATUSES]),
     ));
   const waiting = await tx
     .select()
     .from(fileReservations)
     .where(and(
-      eq(fileReservations.projectId, input.projectId),
-      eq(fileReservations.projectWorkspaceId, input.projectWorkspaceId),
+      eq(fileReservations.companyId, input.companyId),
+      eq(fileReservations.workspaceScopeKey, input.workspaceScopeKey),
       eq(fileReservations.status, "waiting"),
     ))
     .orderBy(asc(fileReservations.createdAt));
@@ -450,15 +457,15 @@ export function lightFileReservationService(db: Db) {
       const requestId = randomUUID();
       const leaseSeconds = input.leaseSeconds ?? scope.policy.reservationLeaseSeconds;
       const result = await db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${projectId}:${scope.workspace.id}`}, 0))`);
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${scope.project.companyId}:${scope.workspaceScopeKey}`}, 0))`);
         const now = new Date();
-        await markExpiredReservationsOrphaned(tx, projectId, now);
+        await markExpiredReservationsOrphaned(tx, scope.project.companyId, scope.workspaceScopeKey, now);
         const active = await tx
           .select()
           .from(fileReservations)
           .where(and(
-            eq(fileReservations.projectId, projectId),
-            eq(fileReservations.projectWorkspaceId, scope.workspace.id),
+            eq(fileReservations.companyId, scope.project.companyId),
+            eq(fileReservations.workspaceScopeKey, scope.workspaceScopeKey),
             inArray(fileReservations.status, [...ACTIVE_RESERVATION_STATUSES]),
           ));
         const ownExact = new Map(
@@ -477,8 +484,8 @@ export function lightFileReservationService(db: Db) {
             })
             .from(fileReservations)
             .where(and(
-              eq(fileReservations.projectId, projectId),
-              eq(fileReservations.projectWorkspaceId, scope.workspace.id),
+              eq(fileReservations.companyId, scope.project.companyId),
+              eq(fileReservations.workspaceScopeKey, scope.workspaceScopeKey),
               inArray(fileReservations.status, ["active", "orphaned", "waiting"]),
             ));
           const cycle = reservationWaitCycle({
@@ -504,6 +511,7 @@ export function lightFileReservationService(db: Db) {
               companyId: scope.project.companyId,
               projectId,
               projectWorkspaceId: scope.workspace.id,
+              workspaceScopeKey: scope.workspaceScopeKey,
               issueId: issue.id,
               agentId: agent.id,
               runId,
@@ -610,7 +618,7 @@ export function lightFileReservationService(db: Db) {
       }
       const normalizedPaths = input.paths ? await canonicalizePathSet(scope.cwd, input.paths) : null;
       const result = await db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${projectId}:${scope.workspace.id}`}, 0))`);
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${scope.project.companyId}:${scope.workspaceScopeKey}`}, 0))`);
         const now = new Date();
         const conditions = [
           eq(fileReservations.projectId, projectId),
@@ -631,8 +639,8 @@ export function lightFileReservationService(db: Db) {
           .where(and(...conditions))
           .returning();
         const promoted = await promoteWaitingReservations(tx, {
-          projectId,
-          projectWorkspaceId: scope.workspace.id,
+          companyId: scope.project.companyId,
+          workspaceScopeKey: scope.workspaceScopeKey,
           leaseSeconds: scope.policy.reservationLeaseSeconds,
           now,
         });
@@ -644,7 +652,7 @@ export function lightFileReservationService(db: Db) {
     releaseForIssueLifecycle: async (projectId: string, issueId: string, reason: string) => {
       const scope = await resolveScope(db, projectId);
       const result = await db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${projectId}:${scope.workspace.id}`}, 0))`);
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${scope.project.companyId}:${scope.workspaceScopeKey}`}, 0))`);
         const now = new Date();
         const released = await tx.update(fileReservations).set({
           status: "released",
@@ -657,8 +665,8 @@ export function lightFileReservationService(db: Db) {
           inArray(fileReservations.status, ["active", "waiting", "orphaned"]),
         )).returning();
         const promoted = await promoteWaitingReservations(tx, {
-          projectId,
-          projectWorkspaceId: scope.workspace.id,
+          companyId: scope.project.companyId,
+          workspaceScopeKey: scope.workspaceScopeKey,
           leaseSeconds: scope.policy.reservationLeaseSeconds,
           now,
         });
@@ -739,18 +747,18 @@ function ensureCommandSucceeded(result: CommandResult, label: string) {
 
 const repositoryChains = new Map<string, Promise<unknown>>();
 
-async function serializeRepositoryOperation<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
-  const previous = repositoryChains.get(workspaceId) ?? Promise.resolve();
+async function serializeRepositoryOperation<T>(workspaceScopeKey: string, operation: () => Promise<T>): Promise<T> {
+  const previous = repositoryChains.get(workspaceScopeKey) ?? Promise.resolve();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const current = previous.catch(() => undefined).then(() => gate);
-  repositoryChains.set(workspaceId, current);
+  repositoryChains.set(workspaceScopeKey, current);
   await previous.catch(() => undefined);
   try {
     return await operation();
   } finally {
     release();
-    if (repositoryChains.get(workspaceId) === current) repositoryChains.delete(workspaceId);
+    if (repositoryChains.get(workspaceScopeKey) === current) repositoryChains.delete(workspaceScopeKey);
   }
 }
 
@@ -785,16 +793,16 @@ async function assertPathsReserved(db: Db, input: {
 }
 
 async function assertValidationBarrier(db: Db, input: {
-  projectId: string;
-  workspaceId: string;
+  companyId: string;
+  workspaceScopeKey: string;
   issueId: string;
 }) {
   const blockers = await db
     .select({ id: fileReservations.id, issueId: fileReservations.issueId, path: fileReservations.normalizedPath })
     .from(fileReservations)
     .where(and(
-      eq(fileReservations.projectId, input.projectId),
-      eq(fileReservations.projectWorkspaceId, input.workspaceId),
+      eq(fileReservations.companyId, input.companyId),
+      eq(fileReservations.workspaceScopeKey, input.workspaceScopeKey),
       inArray(fileReservations.status, [...ACTIVE_RESERVATION_STATUSES]),
       ne(fileReservations.issueId, input.issueId),
     ));
@@ -822,7 +830,9 @@ async function executeRepositoryOperation(input: {
   operationId: string;
   cwd: string;
   workspaceId: string;
+  workspaceScopeKey: string;
   projectId: string;
+  companyId: string;
   issueId: string;
   agent: { id: string; name: string };
   policy: LightRepositoryPolicy;
@@ -859,8 +869,8 @@ async function executeRepositoryOperation(input: {
   if (input.request.kind === "validate") {
     if (input.policy.requireCleanValidationBarrier) {
       await assertValidationBarrier(input.db, {
-        projectId: input.projectId,
-        workspaceId: input.workspaceId,
+        companyId: input.companyId,
+        workspaceScopeKey: input.workspaceScopeKey,
         issueId: input.issueId,
       });
     }
@@ -968,6 +978,106 @@ async function executeRepositoryOperation(input: {
   );
 }
 
+async function claimDeploymentApproval(db: Db, input: {
+  companyId: string;
+  projectId: string;
+  issueId: string;
+  agentId: string;
+  actionId: string;
+  targetBranch: string;
+  operationId: string;
+}): Promise<string> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`human-action-execution:${input.actionId}`}, 0))`);
+    const action = await tx
+      .select()
+      .from(humanActions)
+      .where(and(
+        eq(humanActions.id, input.actionId),
+        eq(humanActions.companyId, input.companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!action) throw notFound("Deployment approval not found");
+    if (
+      action.actionKind !== "deployment"
+      || action.projectId !== input.projectId
+      || action.issueId !== input.issueId
+      || action.requestingAgentId !== input.agentId
+    ) {
+      throw forbidden("Deployment approval does not match this task, project, and agent", {
+        code: "light_repository_deploy_approval_scope_mismatch",
+      });
+    }
+    if (action.expiresAt && action.expiresAt.getTime() <= Date.now()) {
+      throw conflict("Deployment approval has expired", {
+        code: "light_repository_deploy_approval_expired",
+      });
+    }
+    const approvedTarget = typeof action.payload?.targetBranch === "string"
+      ? action.payload.targetBranch
+      : null;
+    if (approvedTarget && approvedTarget !== input.targetBranch) {
+      throw forbidden("Deployment approval is for another target branch", {
+        code: "light_repository_deploy_approval_scope_mismatch",
+      });
+    }
+    if (action.status !== "approved") {
+      throw conflict("Deployment approval is not approved or was already consumed", {
+        code: "light_repository_deploy_approval_not_available",
+      });
+    }
+    const executionClaim = `repository:${input.operationId}:${randomUUID()}`;
+    const claimed = await tx
+      .update(humanActions)
+      .set({
+        status: "executing",
+        executionClaim,
+        executingAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(humanActions.id, action.id),
+        eq(humanActions.status, "approved"),
+      ))
+      .returning({ id: humanActions.id })
+      .then((rows) => rows[0] ?? null);
+    if (!claimed) {
+      throw conflict("Deployment approval was already consumed", {
+        code: "light_repository_deploy_approval_not_available",
+      });
+    }
+    return executionClaim;
+  });
+}
+
+async function completeDeploymentApproval(db: Db, input: {
+  actionId: string;
+  executionClaim: string;
+  outcome: "succeeded" | "failed_unknown";
+  receipt: Record<string, unknown>;
+}) {
+  const completed = await db
+    .update(humanActions)
+    .set({
+      status: input.outcome,
+      receipt: input.receipt,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(humanActions.id, input.actionId),
+      eq(humanActions.status, "executing"),
+      eq(humanActions.executionClaim, input.executionClaim),
+    ))
+    .returning({ id: humanActions.id })
+    .then((rows) => rows[0] ?? null);
+  if (!completed) {
+    throw conflict("Deployment approval execution claim was lost", {
+      code: "light_repository_deploy_approval_claim_lost",
+    });
+  }
+}
+
 export function lightRepositoryService(db: Db) {
   return {
     listOperations: async (projectId: string, issueId?: string) => {
@@ -987,6 +1097,16 @@ export function lightRepositoryService(db: Db) {
       if (request.kind === "merge" && scope.policy.requireHumanApprovalForMerge && actor.actorType === "agent") {
         throw forbidden("This project requires a human to approve and execute merges", {
           code: "light_repository_merge_approval_required",
+        });
+      }
+      if (
+        request.kind === "push"
+        && scope.policy.requireHumanApprovalForDeploy
+        && actor.actorType === "agent"
+        && !request.humanActionId
+      ) {
+        throw forbidden("This deploy push needs an approved human action", {
+          code: "light_repository_deploy_approval_required",
         });
       }
       const { agent } = await resolveIssueAndAgent({
@@ -1014,7 +1134,8 @@ export function lightRepositoryService(db: Db) {
           updatedAt: new Date(),
         })
         .where(and(
-          eq(repositoryOperations.projectWorkspaceId, scope.workspace.id),
+          eq(repositoryOperations.companyId, scope.project.companyId),
+          eq(repositoryOperations.workspaceScopeKey, scope.workspaceScopeKey),
           inArray(repositoryOperations.status, ["queued", "running"]),
           lte(repositoryOperations.createdAt, staleBefore),
         ));
@@ -1027,13 +1148,18 @@ export function lightRepositoryService(db: Db) {
             companyId: scope.project.companyId,
             projectId,
             projectWorkspaceId: scope.workspace.id,
+            workspaceScopeKey: scope.workspaceScopeKey,
             issueId: request.issueId,
             agentId: agent.id,
             runId,
             kind: request.kind,
             paths: normalizedRequest.paths ?? null,
             targetBranch: request.targetBranch ?? null,
-            metadata: { actorType: actor.actorType, actorId: actor.actorId },
+            metadata: {
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              ...(request.humanActionId ? { humanActionId: request.humanActionId } : {}),
+            },
           })
           .returning()
           .then((rows) => rows[0]!);
@@ -1044,23 +1170,56 @@ export function lightRepositoryService(db: Db) {
         });
       }
 
-      return serializeRepositoryOperation(scope.workspace.id, async () => {
+      return serializeRepositoryOperation(scope.workspaceScopeKey, async () => {
         await db
           .update(repositoryOperations)
           .set({ status: "running", startedAt: new Date(), updatedAt: new Date() })
           .where(eq(repositoryOperations.id, created.id));
+        let approvalClaim: string | null = null;
         try {
+          if (
+            request.kind === "push"
+            && scope.policy.requireHumanApprovalForDeploy
+            && actor.actorType === "agent"
+          ) {
+            approvalClaim = await claimDeploymentApproval(db, {
+              companyId: scope.project.companyId,
+              projectId,
+              issueId: request.issueId,
+              agentId: agent.id,
+              actionId: request.humanActionId!,
+              targetBranch: request.targetBranch!,
+              operationId: created.id,
+            });
+          }
           const result = await executeRepositoryOperation({
             db,
             operationId: created.id,
             cwd: scope.cwd,
             workspaceId: scope.workspace.id,
+            workspaceScopeKey: scope.workspaceScopeKey,
             projectId,
+            companyId: scope.project.companyId,
             issueId: request.issueId,
             agent,
             policy: scope.policy,
             request: normalizedRequest,
           });
+          if (approvalClaim) {
+            const completedClaim = approvalClaim;
+            approvalClaim = null;
+            await completeDeploymentApproval(db, {
+              actionId: request.humanActionId!,
+              executionClaim: completedClaim,
+              outcome: "succeeded",
+              receipt: {
+                repositoryOperationId: created.id,
+                projectId,
+                issueId: request.issueId,
+                targetBranch: request.targetBranch,
+              },
+            });
+          }
           const updated = await db
             .update(repositoryOperations)
             .set({
@@ -1078,6 +1237,20 @@ export function lightRepositoryService(db: Db) {
           return { companyId: scope.project.companyId, operation: toRepositoryOperation(updated) };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          if (approvalClaim) {
+            await completeDeploymentApproval(db, {
+              actionId: request.humanActionId!,
+              executionClaim: approvalClaim,
+              outcome: "failed_unknown",
+              receipt: {
+                repositoryOperationId: created.id,
+                projectId,
+                issueId: request.issueId,
+                targetBranch: request.targetBranch,
+                error: message.slice(0, 2_000),
+              },
+            }).catch(() => undefined);
+          }
           const updated = await db
             .update(repositoryOperations)
             .set({
@@ -1136,7 +1309,7 @@ export function lightTaskCheckpointService(db: Db) {
         agentId: agent.id,
         paths,
       });
-      return serializeRepositoryOperation(scope.workspace.id, async () => {
+      return serializeRepositoryOperation(scope.workspaceScopeKey, async () => {
         const head = ensureCommandSucceeded(await runGit(scope.cwd, ["rev-parse", "HEAD"]), "git rev-parse").stdout.trim();
         const gitDirRaw = ensureCommandSucceeded(await runGit(scope.cwd, ["rev-parse", "--git-dir"]), "git rev-parse --git-dir").stdout.trim();
         const indexPath = path.join(path.resolve(scope.cwd, gitDirRaw), `paperclip-checkpoint-${randomUUID()}`);
@@ -1209,7 +1382,7 @@ export function lightTaskCheckpointService(db: Db) {
         agentId: agent.id,
         paths: checkpoint.paths as string[],
       });
-      return serializeRepositoryOperation(scope.workspace.id, async () => {
+      return serializeRepositoryOperation(scope.workspaceScopeKey, async () => {
         const result = await runProcess({
           command: "git",
           args: ["-C", scope.cwd, "apply", "--3way", "--whitespace=nowarn", "-"],

@@ -28,6 +28,7 @@ export const fileReservations = pgTable(
     projectWorkspaceId: uuid("project_workspace_id")
       .notNull()
       .references(() => projectWorkspaces.id, { onDelete: "cascade" }),
+    workspaceScopeKey: text("workspace_scope_key").notNull(),
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -55,7 +56,7 @@ export const fileReservations = pgTable(
     issueStatusIdx: index("file_reservations_issue_status_idx").on(table.issueId, table.status),
     requestIdx: index("file_reservations_request_idx").on(table.requestId),
     activeExactPathUq: uniqueIndex("file_reservations_active_exact_path_uq")
-      .on(table.projectId, table.projectWorkspaceId, table.normalizedPath)
+      .on(table.companyId, table.workspaceScopeKey, table.normalizedPath)
       .where(sql`${table.status} in ('active', 'orphaned')`),
   }),
 );
@@ -69,6 +70,7 @@ export const repositoryOperations = pgTable(
     projectWorkspaceId: uuid("project_workspace_id")
       .notNull()
       .references(() => projectWorkspaces.id, { onDelete: "cascade" }),
+    workspaceScopeKey: text("workspace_scope_key").notNull(),
     issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
     agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -91,7 +93,7 @@ export const repositoryOperations = pgTable(
     projectCreatedIdx: index("repository_operations_project_created_idx").on(table.projectId, table.createdAt),
     issueCreatedIdx: index("repository_operations_issue_created_idx").on(table.issueId, table.createdAt),
     activeWorkspaceUq: uniqueIndex("repository_operations_active_workspace_uq")
-      .on(table.projectWorkspaceId)
+      .on(table.companyId, table.workspaceScopeKey)
       .where(sql`${table.status} in ('queued', 'running')`),
   }),
 );

@@ -53,7 +53,7 @@ Review and approvals:
   pc review list TASK
   pc review request TASK -s SUMMARY [--reviewer AGENT]
   pc review decide TASK REVIEW accepted|changes_requested|blocked|cancelled -s SUMMARY [--changes "A|B"]
-  pc action request COMPANY KIND -s SUMMARY -k IDEMPOTENCY_KEY [--task TASK] [--project PROJECT]
+  pc action request COMPANY KIND -s SUMMARY -k IDEMPOTENCY_KEY [--task TASK] [--project PROJECT] [--target-branch BRANCH]
 
 Memory and checkpoints:
   pc memory list PROJECT
@@ -73,7 +73,7 @@ Repository broker:
   pc repo status|diff|validate|fetch|sync PROJECT TASK [PATH...]
   pc repo commit PROJECT TASK -m MESSAGE [PATH...]
   pc repo merge PROJECT TASK BRANCH
-  pc repo push PROJECT TASK BRANCH`;
+  pc repo push PROJECT TASK BRANCH [--approval ACTION_ID]`;
 
 function fail(message, exitCode = 1) {
   process.stderr.write(`pc: ${message}\n`);
@@ -512,11 +512,13 @@ async function actionCommand(action, args) {
   const idempotencyKey = required(takeOption(args, ["-k", "--key"]), "idempotency key");
   const issueId = takeOption(args, ["--task"]);
   const projectId = takeOption(args, ["--project"]);
+  const targetBranch = takeOption(args, ["--target-branch"]);
   if (args.length > 0) fail(`unexpected arguments: ${args.join(" ")}`);
   return request("POST", `/api/companies/${segment(companyId)}/light/actions`, {
     actionKind,
     summary,
     idempotencyKey,
+    ...(targetBranch ? { payload: { targetBranch } } : {}),
     ...(issueId ? { issueId: await resolveTaskId(issueId) } : {}),
     ...(projectId ? { projectId: await resolveProjectId(projectId) } : {}),
     ...(process.env.PAPERCLIP_RUN_ID ? { requestingRunId: process.env.PAPERCLIP_RUN_ID } : {}),
@@ -579,6 +581,10 @@ async function repoCommand(action, args) {
     if (args.length > 0) payload.paths = args;
   } else if (action === "push" || action === "merge") {
     payload.targetBranch = required(args.shift(), "target branch");
+    if (action === "push") {
+      const humanActionId = takeOption(args, ["--approval"]);
+      if (humanActionId) payload.humanActionId = humanActionId;
+    }
     if (args.length > 0) fail(`unexpected arguments: ${args.join(" ")}`);
   } else if (args.length > 0) {
     payload.paths = args;

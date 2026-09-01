@@ -141,6 +141,7 @@ export const repositoryOperationSchema = z
     paths: z.array(z.string().min(1).max(4_096)).max(2_000).optional(),
     message: z.string().min(1).max(4_096).optional(),
     targetBranch: z.string().min(1).max(255).optional(),
+    humanActionId: z.string().guid().optional().nullable(),
     runId: z.string().guid().optional().nullable(),
   })
   .strict()

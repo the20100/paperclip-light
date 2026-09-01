@@ -62,4 +62,14 @@ describe("Paperclip Light contracts", () => {
     expect(() => repositoryOperationSchema.parse({ issueId: randomUUID(), kind: "push" }))
       .toThrow(/Target branch/);
   });
+
+  it("accepts a single-use human action reference for an approved push", () => {
+    const humanActionId = randomUUID();
+    expect(repositoryOperationSchema.parse({
+      issueId: randomUUID(),
+      kind: "push",
+      targetBranch: "main",
+      humanActionId,
+    }).humanActionId).toBe(humanActionId);
+  });
 });

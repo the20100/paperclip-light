@@ -153,4 +153,31 @@ describe("Paperclip Light runtime CLI", () => {
     });
     expect(JSON.parse(observed[1]!.body!)).toMatchObject({ issueId: taskId, paths: ["ui/src/App.tsx"] });
   });
+
+  it("forwards a deployment approval when pushing", async () => {
+    const taskId = "44444444-4444-4444-8444-444444444444";
+    const approvalId = "55555555-5555-4555-8555-555555555555";
+    let requestBody = "";
+    const apiUrl = await listen((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      req.on("end", () => {
+        requestBody = Buffer.concat(chunks).toString("utf8");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ operation: { id: "operation-1", status: "succeeded" } }));
+      });
+    });
+
+    const result = await runCli(apiUrl, [
+      "repo", "push", "project-1", taskId, "main", "--approval", approvalId,
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(requestBody)).toMatchObject({
+      issueId: taskId,
+      kind: "push",
+      targetBranch: "main",
+      humanActionId: approvalId,
+    });
+  });
 });

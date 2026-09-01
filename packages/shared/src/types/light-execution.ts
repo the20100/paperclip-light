@@ -13,6 +13,7 @@ export interface FileReservation {
   companyId: string;
   projectId: string;
   projectWorkspaceId: string;
+  workspaceScopeKey: string;
   issueId: string;
   agentId: string;
   runId: string | null;
@@ -51,6 +52,7 @@ export interface RepositoryOperation {
   companyId: string;
   projectId: string;
   projectWorkspaceId: string;
+  workspaceScopeKey: string;
   issueId: string;
   agentId: string;
   runId: string | null;
