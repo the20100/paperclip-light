@@ -63,7 +63,7 @@
     "picocolors": "^1.1.1",
     "postgres": "^3.4.9",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
