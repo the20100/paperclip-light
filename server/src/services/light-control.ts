@@ -402,10 +402,10 @@ export function lightControlService(db: Db) {
           reviewerAgentId = configuredIds.find((id) => fallbackAgents.some((agent) => agent.id === id && invokable(agent.status)))
             ?? fallbackAgents
               .filter((agent) => agent.id !== requesterAgentId && invokable(agent.status))
-              .sort((left, right) => {
-                const rank = (role: string | null) => role === "ceo" ? 0 : role === "manager" ? 1 : 2;
-                return rank(left.role) - rank(right.role) || left.id.localeCompare(right.id);
-              })[0]?.id
+              .sort((left, right) =>
+                lightReviewerRoleRank(left.role) - lightReviewerRoleRank(right.role)
+                || left.id.localeCompare(right.id)
+              )[0]?.id
             ?? null;
         }
       }
@@ -934,4 +934,19 @@ export function lightControlService(db: Db) {
       };
     },
   };
+}
+
+export function lightReviewerRoleRank(role: string | null) {
+  switch (role?.trim().toLowerCase()) {
+    case "ceo": return 0;
+    case "cto": return 1;
+    case "manager":
+    case "director":
+    case "head":
+    case "lead": return 2;
+    case "engineer": return 3;
+    case "designer": return 4;
+    case "general": return 5;
+    default: return 6;
+  }
 }

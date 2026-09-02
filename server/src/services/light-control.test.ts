@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   estimateContextTokens,
+  lightReviewerRoleRank,
   planRunContextComponents,
   projectMemoryScore,
   selectProjectMemoryItems,
@@ -69,5 +70,18 @@ describe("Paperclip Light context controls", () => {
       now: new Date("2026-08-31T12:00:00.000Z"),
     });
     expect(selected.map((item) => item.id)).toEqual(["a"]);
+  });
+});
+
+describe("lightReviewerRoleRank", () => {
+  it("prefers the leadership chain before specialist fallback reviewers", () => {
+    const roles = ["designer", "general", "engineer", "manager", "cto", "ceo"];
+    expect(roles.sort((left, right) => lightReviewerRoleRank(left) - lightReviewerRoleRank(right)))
+      .toEqual(["ceo", "cto", "manager", "engineer", "designer", "general"]);
+  });
+
+  it("puts unknown and missing roles last", () => {
+    expect(lightReviewerRoleRank("custom-role")).toBeGreaterThan(lightReviewerRoleRank("designer"));
+    expect(lightReviewerRoleRank(null)).toBeGreaterThan(lightReviewerRoleRank("designer"));
   });
 });

@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, or, inArray, sql } from "drizzle-orm";
+import { and, eq, or, inArray, ne, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -41,6 +41,7 @@ import {
   plugins,
   projects,
   projectWorkspaces,
+  taskReviews,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -3890,8 +3891,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryIssues).toHaveLength(0);
   });
 
-  it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
-    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+  it("redacts secret-bearing successful-run progress before automatic manager review", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(companies).set({ executionProfile: "light" }).where(eq(companies.id, companyId));
     const bearerSecret = "live-bearer-token-value";
     const apiKeySecret = "sk-testsuccessfulhandoffsecret";
     const redactedDetectedSummary = redactDetectedSuccessfulRunProgressSummaryForBoard(
@@ -3913,7 +3915,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: `Made progress but left the issue open. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+      summary: `I will inspect src/auth.ts next and then implement the fix. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
       resultJson: {
         message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
       },
@@ -3925,36 +3927,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
-    const handoffWakeups = await waitForValue(async () => {
+    const reviews = await waitForValue(async () => {
       const rows = await db
         .select()
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.agentId, agentId));
-      const matches = rows.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff");
-      return matches.length > 0 ? matches : null;
+        .from(taskReviews)
+        .where(eq(taskReviews.issueId, issueId));
+      return rows.length > 0 ? rows : null;
     }, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    expect(handoffWakeups).toHaveLength(1);
-    const wakeupPayloadText = JSON.stringify(handoffWakeups[0]?.payload ?? {});
-    expect(wakeupPayloadText).not.toContain(bearerSecret);
-    expect(wakeupPayloadText).not.toContain(apiKeySecret);
-
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    const handoffComment = comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY);
-    expect(handoffComment).toBeTruthy();
-    expect(handoffComment?.body).not.toContain(bearerSecret);
-    expect(handoffComment?.body).not.toContain(apiKeySecret);
-    expect(JSON.stringify(handoffComment?.metadata ?? {})).not.toContain(bearerSecret);
-    expect(JSON.stringify(handoffComment?.metadata ?? {})).not.toContain(apiKeySecret);
+    expect(reviews).toHaveLength(1);
+    expect(reviews?.[0]?.status).toBe("pending");
+    expect(reviews?.[0]?.summary).not.toContain(bearerSecret);
+    expect(reviews?.[0]?.summary).not.toContain(apiKeySecret);
 
     const activity = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
-    const handoffActivity = activity.find((event) => event.action === "issue.successful_run_handoff_required");
-    expect(handoffActivity).toBeTruthy();
-    const activityDetailsText = JSON.stringify(handoffActivity?.details ?? {});
+    const reviewActivity = activity.find((event) => event.action === "issue.light_manager_review_requested");
+    expect(reviewActivity).toBeTruthy();
+    const activityDetailsText = JSON.stringify(reviewActivity?.details ?? {});
     expect(activityDetailsText).not.toContain(bearerSecret);
     expect(activityDetailsText).not.toContain(apiKeySecret);
   });
