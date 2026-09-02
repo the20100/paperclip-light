@@ -2406,7 +2406,7 @@ A reservation MUST NOT become writable by another task immediately after an unex
 
 This prevents a crashed agent's partial edit from becoming another agent's invisible starting point.
 
-The deterministic maintenance sweep MAY reclaim an expired orphan without human intervention when persisted state proves that the owner completed successfully, or when the task already entered `in_review` or a terminal lifecycle state whose transition captured any owned diff. A failed, interrupted, missing, or otherwise ambiguous non-terminal owner remains orphaned for checkpoint recovery or human force release. Reclaiming a safe orphan immediately runs FIFO waiter promotion; promotion skips tasks that still have unresolved first-class dependencies, normalizes legacy resource-only `blocked` rows back to `paused`, and emits at most one resume wake for the promoted reservation request.
+The deterministic maintenance sweep MAY reclaim an expired orphan without human intervention when persisted state proves that the owner completed successfully, or when the task already entered `in_review` or a terminal lifecycle state whose transition captured any owned diff. A queued/running/scheduled retry or active wake for the same task keeps the reservation protected even when its row still points at an earlier successful run. A failed, interrupted, missing, or otherwise ambiguous non-terminal owner remains orphaned for checkpoint recovery or human force release. Reclaiming a safe orphan immediately runs FIFO waiter promotion; promotion skips tasks that still have unresolved first-class dependencies, normalizes legacy resource-only `blocked` rows back to `paused`, and emits at most one resume wake for the promoted reservation request.
 
 ### 41.10 Shared Git metadata
 

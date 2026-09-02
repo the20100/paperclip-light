@@ -59,6 +59,18 @@ describe("Paperclip Light file reservations", () => {
       runStatus: "succeeded",
     })).toBe(true);
     expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: "run-1",
+      runStatus: "succeeded",
+      hasLiveIssueRun: true,
+    })).toBe(false);
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: "run-1",
+      runStatus: "succeeded",
+      hasLiveIssueWake: true,
+    })).toBe(false);
+    expect(isExpiredReservationReclaimable({
       issueStatus: "in_review",
       runId: "run-1",
       runStatus: "running",

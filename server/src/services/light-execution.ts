@@ -270,10 +270,22 @@ export function isExpiredReservationReclaimable(input: {
   issueStatus: string | null;
   runId: string | null;
   runStatus: string | null;
+  hasLiveIssueRun?: boolean;
+  hasLiveIssueWake?: boolean;
 }) {
   if (["in_review", "done", "failed", "cancelled"].includes(input.issueStatus ?? "")) return true;
+  if (input.hasLiveIssueRun || input.hasLiveIssueWake) return false;
   if (!input.runId || !input.runStatus) return false;
   return input.runStatus === "succeeded";
+}
+
+function executionIssueId(contextSnapshot: unknown, nativeIssueId: string | null) {
+  if (nativeIssueId) return nativeIssueId;
+  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+  const context = contextSnapshot as Record<string, unknown>;
+  if (typeof context.issueId === "string" && context.issueId) return context.issueId;
+  if (typeof context.taskId === "string" && context.taskId) return context.taskId;
+  return null;
 }
 
 export function shouldNormalizeReservationWait(input: {
@@ -514,9 +526,39 @@ async function reconcileExpiredReservations(tx: any, input: {
     input.workspaceScopeKey,
     input.now,
   );
+  const [liveRuns, liveWakes] = await Promise.all([
+    tx
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      )),
+    tx
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+      )),
+  ]);
+  const liveRunIssueIds = new Set<string>();
+  for (const run of liveRuns as Array<{ contextSnapshot: unknown; nativeIssueId: string | null }>) {
+    const issueId = executionIssueId(run.contextSnapshot, run.nativeIssueId);
+    if (issueId) liveRunIssueIds.add(issueId);
+  }
+  const liveWakeIssueIds = new Set<string>();
+  for (const wake of liveWakes as Array<{ payload: unknown }>) {
+    const issueId = executionIssueId(wake.payload, null);
+    if (issueId) liveWakeIssueIds.add(issueId);
+  }
   const staleOwners = await tx
     .select({
       id: fileReservations.id,
+      issueId: fileReservations.issueId,
       issueStatus: issues.status,
       runId: fileReservations.runId,
       runStatus: heartbeatRuns.status,
@@ -530,7 +572,16 @@ async function reconcileExpiredReservations(tx: any, input: {
       eq(fileReservations.status, "orphaned"),
     ));
   const reclaimableIds = staleOwners
-    .filter(isExpiredReservationReclaimable)
+    .filter((row: {
+      issueId: string;
+      issueStatus: string | null;
+      runId: string | null;
+      runStatus: string | null;
+    }) => isExpiredReservationReclaimable({
+      ...row,
+      hasLiveIssueRun: liveRunIssueIds.has(row.issueId),
+      hasLiveIssueWake: liveWakeIssueIds.has(row.issueId),
+    }))
     .map((row: { id: string }) => row.id);
   const released = reclaimableIds.length > 0
     ? await tx
