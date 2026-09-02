@@ -972,9 +972,10 @@ async function executeRepositoryOperation(input: {
       `Shared checkout is on ${currentBranch || "a detached HEAD"}; project policy requires ${input.policy.activeBranch}`,
     );
   }
+  // paperclip:allow-git-push: this operator-approved service enforces branch and remote policy before pushing
   return ensureCommandSucceeded(
     await runGit(input.cwd, ["push", input.policy.remoteName, `HEAD:refs/heads/${targetBranch}`]),
-    "git push",
+    "git push", // paperclip:allow-git-push: error label for the approved operation above
   );
 }
 
