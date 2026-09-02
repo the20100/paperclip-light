@@ -1114,6 +1114,7 @@ export async function startServer(): Promise<StartedServer> {
           result.reservationsOrphaned > 0
           || result.reservationsReleased > 0
           || result.reservationsPromoted > 0
+          || result.reservationWaitsRecovered > 0
           || result.reservationSweepFailures > 0
           || result.repositoryOperationsFailed > 0
           || result.runLogsDeleted > 0

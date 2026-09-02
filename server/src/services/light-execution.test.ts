@@ -4,6 +4,7 @@ import {
   normalizeReservedPath,
   reservationWaitCycle,
   reservedPathsOverlap,
+  shouldRecoverStrandedReservationWait,
   shouldNormalizeReservationWait,
 } from "./light-execution.js";
 
@@ -105,6 +106,41 @@ describe("Paperclip Light file reservations", () => {
       reservationRequestId: "older-request",
       currentRequestId: "request-1",
       hasUnresolvedBlocker: false,
+    })).toBe(false);
+  });
+
+  it("recovers only stranded resource waits with no remaining execution path", () => {
+    expect(shouldRecoverStrandedReservationWait({
+      issueStatus: "blocked",
+      pauseReason: null,
+      reservationRequestId: "request-1",
+      hasCurrentReservation: false,
+      hasUnresolvedBlocker: false,
+      hasLiveExecutionPath: false,
+    })).toBe(true);
+    expect(shouldRecoverStrandedReservationWait({
+      issueStatus: "paused",
+      pauseReason: "file_reservation",
+      reservationRequestId: "request-1",
+      hasCurrentReservation: false,
+      hasUnresolvedBlocker: false,
+      hasLiveExecutionPath: false,
+    })).toBe(true);
+    expect(shouldRecoverStrandedReservationWait({
+      issueStatus: "blocked",
+      pauseReason: null,
+      reservationRequestId: "request-1",
+      hasCurrentReservation: false,
+      hasUnresolvedBlocker: true,
+      hasLiveExecutionPath: false,
+    })).toBe(false);
+    expect(shouldRecoverStrandedReservationWait({
+      issueStatus: "paused",
+      pauseReason: "manual_hold",
+      reservationRequestId: "request-1",
+      hasCurrentReservation: false,
+      hasUnresolvedBlocker: false,
+      hasLiveExecutionPath: false,
     })).toBe(false);
   });
 });

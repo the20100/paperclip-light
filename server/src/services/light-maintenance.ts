@@ -22,6 +22,7 @@ export interface LightMaintenanceSweepResult {
   reservationsOrphaned: number;
   reservationsReleased: number;
   reservationsPromoted: number;
+  reservationWaitsRecovered: number;
   reservationSweepFailures: number;
   repositoryOperationsFailed: number;
   humanActionsExpired: number;
@@ -104,6 +105,7 @@ export function lightMaintenanceService(
         reservationsOrphaned: 0,
         reservationsReleased: 0,
         reservationsPromoted: 0,
+        reservationWaitsRecovered: 0,
         reservationSweepFailures: 0,
         repositoryOperationsFailed: 0,
         humanActionsExpired: 0,
@@ -155,16 +157,14 @@ export function lightMaintenanceService(
         const reservationProjects = await db
           .selectDistinct({ projectId: fileReservations.projectId })
           .from(fileReservations)
-          .where(and(
-            eq(fileReservations.companyId, company.id),
-            inArray(fileReservations.status, ["active", "orphaned", "waiting"]),
-          ));
+          .where(eq(fileReservations.companyId, company.id));
         for (const { projectId } of reservationProjects) {
           try {
             const reconciled = await reservationBroker.reconcileExpired(projectId);
             result.reservationsOrphaned += reconciled.orphaned;
             result.reservationsReleased += reconciled.released.length;
             result.reservationsPromoted += reconciled.promoted.length;
+            result.reservationWaitsRecovered += reconciled.recoveredIssueIds.length;
           } catch (error) {
             result.reservationSweepFailures += 1;
             logger.warn({ error, companyId: company.id, projectId }, "Light file reservation reconciliation failed");

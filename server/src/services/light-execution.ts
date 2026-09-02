@@ -299,6 +299,24 @@ export function shouldNormalizeReservationWait(input: {
     && !input.hasUnresolvedBlocker;
 }
 
+export function shouldRecoverStrandedReservationWait(input: {
+  issueStatus: string;
+  pauseReason: string | null;
+  reservationRequestId: string | null;
+  hasCurrentReservation: boolean;
+  hasUnresolvedBlocker: boolean;
+  hasLiveExecutionPath: boolean;
+}) {
+  if (
+    !input.reservationRequestId
+    || input.hasCurrentReservation
+    || input.hasUnresolvedBlocker
+    || input.hasLiveExecutionPath
+  ) return false;
+  return (input.issueStatus === "paused" && input.pauseReason === "file_reservation")
+    || input.issueStatus === "blocked";
+}
+
 function findConflicts(
   requestedPaths: readonly string[],
   activeRows: readonly FileReservationRow[],
@@ -596,7 +614,110 @@ async function reconcileExpiredReservations(tx: any, input: {
       .returning()
     : [];
   const promoted = await promoteWaitingReservations(tx, input);
-  return { orphaned, released, promoted };
+  const strandedCandidates = await tx
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      status: issues.status,
+      pauseReason: issues.pauseReason,
+      assigneeAgentId: issues.assigneeAgentId,
+      executionState: issues.executionState,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.companyId),
+      inArray(issues.status, ["paused", "blocked"]),
+      sql`${issues.executionState} -> 'light' ->> 'reservationRequestId' is not null`,
+      sql`exists (
+        select 1 from file_reservations history
+        where history.issue_id = ${issues.id}
+          and history.workspace_scope_key = ${input.workspaceScopeKey}
+          and history.request_id::text = ${issues.executionState} -> 'light' ->> 'reservationRequestId'
+      )`,
+      sql`not exists (
+        select 1 from file_reservations current_reservation
+        where current_reservation.issue_id = ${issues.id}
+          and current_reservation.request_id::text = ${issues.executionState} -> 'light' ->> 'reservationRequestId'
+          and current_reservation.status in ('active', 'orphaned', 'waiting')
+      )`,
+    ));
+  const recoveredIssueIds: string[] = [];
+  for (const issue of strandedCandidates as Array<{
+    id: string;
+    companyId: string;
+    status: string;
+    pauseReason: string | null;
+    assigneeAgentId: string | null;
+    executionState: unknown;
+  }>) {
+    const executionState = issue.executionState && typeof issue.executionState === "object" && !Array.isArray(issue.executionState)
+      ? issue.executionState as Record<string, unknown>
+      : {};
+    const lightState = executionState.light && typeof executionState.light === "object" && !Array.isArray(executionState.light)
+      ? executionState.light as Record<string, unknown>
+      : {};
+    const reservationRequestId = typeof lightState.reservationRequestId === "string"
+      ? lightState.reservationRequestId
+      : null;
+    const unresolvedBlocker = await tx
+      .select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issues.id, issueRelations.issueId))
+      .where(and(
+        eq(issueRelations.companyId, input.companyId),
+        eq(issueRelations.relatedIssueId, issue.id),
+        eq(issueRelations.type, "blocks"),
+        notInArray(issues.status, ["done", "failed", "cancelled"]),
+      ))
+      .limit(1)
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (!shouldRecoverStrandedReservationWait({
+      issueStatus: issue.status,
+      pauseReason: issue.pauseReason,
+      reservationRequestId,
+      hasCurrentReservation: false,
+      hasUnresolvedBlocker: unresolvedBlocker !== null,
+      hasLiveExecutionPath: liveRunIssueIds.has(issue.id) || liveWakeIssueIds.has(issue.id),
+    }) || !issue.assigneeAgentId || !reservationRequestId) continue;
+
+    const updated = await tx
+      .update(issues)
+      .set({
+        status: "in_progress",
+        pauseReason: null,
+        pausedAt: null,
+        unblockDescriptor: null,
+        blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null,
+        executionState: mergeExecutionState(issue.executionState, {
+          reservationRequestId: null,
+          waitingOnReservationIds: [],
+          reservationWaitRecoveredAt: input.now.toISOString(),
+        }),
+        updatedAt: input.now,
+      })
+      .where(and(
+        eq(issues.id, issue.id),
+        eq(issues.status, issue.status),
+      ))
+      .returning({ id: issues.id })
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (!updated) continue;
+
+    await tx.insert(agentWakeupRequests).values({
+      companyId: issue.companyId,
+      agentId: issue.assigneeAgentId,
+      source: "file_reservation",
+      triggerDetail: "files_available",
+      reason: "Stranded file-reservation wait recovered",
+      payload: { issueId: issue.id, reservationRequestId },
+      requestedByActorType: "system",
+      requestedByActorId: "light_repository_broker",
+      idempotencyKey: `file-reservation-stranded:${reservationRequestId}`,
+    });
+    recoveredIssueIds.push(issue.id);
+  }
+  return { orphaned, released, promoted, recoveredIssueIds };
 }
 
 export function lightFileReservationService(db: Db) {
@@ -884,6 +1005,7 @@ export function lightFileReservationService(db: Db) {
           orphaned: reconciled.orphaned.length,
           released: reconciled.released.map(toReservation),
           promoted: reconciled.promoted.map(toReservation),
+          recoveredIssueIds: reconciled.recoveredIssueIds,
         };
       });
       return { companyId: scope.project.companyId, ...result };
