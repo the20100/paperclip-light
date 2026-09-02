@@ -75,6 +75,7 @@ import {
   toolConnections,
   toolProfileEntries,
   toolProfiles,
+  taskReviews,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -4561,6 +4562,23 @@ function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+async function isPendingLightTaskReviewer(
+  dbOrTx: Pick<Db, "select">,
+  issueId: string,
+  agentId: string,
+) {
+  return dbOrTx
+    .select({ id: taskReviews.id })
+    .from(taskReviews)
+    .where(and(
+      eq(taskReviews.issueId, issueId),
+      eq(taskReviews.reviewerAgentId, agentId),
+      eq(taskReviews.status, "pending"),
+    ))
+    .limit(1)
+    .then((rows) => Boolean(rows[0]));
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -10231,6 +10249,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agentId: run.agentId,
       runId: run.id,
     });
+    if (review.status === "pending" && review.reviewerAgentId) {
+      await enqueueWakeup(review.reviewerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: {
+          issueId: issue.id,
+          reviewId: review.id,
+          revision: review.revision,
+          reviewSummary: review.summary,
+        },
+        idempotencyKey: `task-review:${review.id}`,
+        requestedByActorType: "agent",
+        requestedByActorId: run.agentId,
+      });
+    }
     await logActivity(db, {
       companyId: run.companyId,
       actorType: "system",
@@ -13316,7 +13350,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      const pendingLightReviewer = unresolvedBlockerCount > 0
+        ? await isPendingLightTaskReviewer(db, issueId, run.agentId)
+        : false;
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context) && !pendingLightReviewer) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
@@ -13648,6 +13685,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
+    // The pending review is authoritative. Older recovery paths could leave an
+    // issue marked blocked while its manager review remained pending; requiring
+    // the denormalized issue status to be `in_review` strands that review.
+    const isPendingLightReviewer = await isPendingLightTaskReviewer(dbOrTx, issue.id, run.agentId);
 
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const authorizedSourceScopedRecovery = wakeReason === "source_scoped_recovery_action" && recoveryActionId
@@ -13669,6 +13710,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
       !isCurrentReviewParticipant &&
+      !isPendingLightReviewer &&
       !authorizedSourceScopedRecovery &&
       !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
     ) {
@@ -19660,6 +19702,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           [issue.id],
           tx,
         ).then((rows) => rows.get(issue.id) ?? null);
+        // A pending review remains executable even if a legacy/recovery path
+        // left the issue status out of sync (for example `blocked`).
+        const pendingLightReviewer = await isPendingLightTaskReviewer(tx, issue.id, agentId);
 
         // Blocked descendants should stay idle until the final blocker resolves.
         // Human comment/mention wakes are the exception: they may run in a
@@ -19667,7 +19712,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (allowsIssueInteractionWake(enrichedContextSnapshot) || pendingLightReviewer);
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
@@ -20445,6 +20490,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  type CancelIssueRunsOptions = CancelRunOptions & {
+    excludeRunIds?: string[];
+  };
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -20508,6 +20557,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
     await startNextQueuedRunForAgent(run.agentId);
+    return cancelled;
+  }
+
+  async function cancelIssueRunsInternal(
+    companyId: string,
+    issueId: string,
+    reason: string,
+    options: CancelIssueRunsOptions = {},
+  ) {
+    const excludedRunIds = [...new Set(options.excludeRunIds ?? [])].filter(Boolean);
+    const conditions = [
+      eq(heartbeatRuns.companyId, companyId),
+      inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+    ];
+    if (excludedRunIds.length > 0) {
+      conditions.push(notInArray(heartbeatRuns.id, excludedRunIds));
+    }
+    const runIds = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(...conditions))
+      .then((rows) => rows.map((row) => row.id));
+
+    const { excludeRunIds: _excludeRunIds, ...cancelOptions } = options;
+    let cancelled = 0;
+    for (const runId of runIds) {
+      const result = await cancelRunInternal(runId, reason, cancelOptions);
+      if (result?.status === "cancelled") cancelled += 1;
+    }
     return cancelled;
   }
 
@@ -21026,6 +21105,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    cancelIssueRuns: (
+      companyId: string,
+      issueId: string,
+      reason: string,
+      options?: CancelIssueRunsOptions,
+    ) => cancelIssueRunsInternal(companyId, issueId, reason, options),
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

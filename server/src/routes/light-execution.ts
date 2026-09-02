@@ -168,13 +168,60 @@ export function lightExecutionRoutes(db: Db) {
   router.post("/issues/:id/light/reviews", validate(taskReviewRequestSchema), async (req, res) => {
     const issue = await accessibleIssue(req, res);
     if (!issue) return;
-    res.status(201).json(await controls.requestTaskReview(issue.id, req.body, getActorInfo(req)));
+    const actor = getActorInfo(req);
+    const review = await controls.requestTaskReview(issue.id, req.body, actor);
+    if (review.status === "pending" && review.reviewerAgentId) {
+      await heartbeats.wakeup(review.reviewerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "execution_review_requested",
+        payload: {
+          issueId: issue.id,
+          reviewId: review.id,
+          revision: review.revision,
+          reviewSummary: review.summary,
+        },
+        idempotencyKey: `task-review:${review.id}`,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+    res.status(201).json(review);
   });
 
   router.post("/issues/:id/light/reviews/:reviewId/decision", validate(taskReviewDecisionSchema), async (req, res) => {
     const issue = await accessibleIssue(req, res);
     if (!issue) return;
-    res.json(await controls.decideTaskReview(issue.id, req.params.reviewId as string, req.body, getActorInfo(req)));
+    const actor = getActorInfo(req);
+    const review = await controls.decideTaskReview(issue.id, req.params.reviewId as string, req.body, actor);
+    await heartbeats.cancelIssueRuns(
+      issue.companyId,
+      issue.id,
+      `Superseded by task review decision: ${review.status}`,
+      {
+        errorCode: "task_review_decision_superseded",
+        eventMessage: "run cancelled after task review decision",
+        eventPayload: { issueId: issue.id, reviewId: review.id, decision: review.status },
+        excludeRunIds: review.decidedRunId ? [review.decidedRunId] : [],
+      },
+    );
+    if (review.status === "changes_requested" && issue.assigneeAgentId) {
+      await heartbeats.wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "execution_changes_requested",
+        payload: {
+          issueId: issue.id,
+          reviewId: review.id,
+          revision: review.revision,
+          requiredChanges: review.requiredChanges,
+        },
+        idempotencyKey: `task-review-changes:${review.id}`,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+    res.json(review);
   });
 
   router.get("/projects/:id/light/memory", async (req, res) => {

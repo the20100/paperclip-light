@@ -448,19 +448,6 @@ export function lightControlService(db: Db) {
           sourceRunId,
         }).returning().then((rows) => rows[0]!);
         await tx.update(issues).set({ status: "in_review", updatedAt: new Date() }).where(eq(issues.id, issueId));
-        if (reviewerAgentId) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: issue.companyId,
-            agentId: reviewerAgentId,
-            source: "task_review",
-            triggerDetail: "review_requested",
-            reason: `Review requested for ${issue.identifier}`,
-            payload: { issueId, reviewId: row.id, revision },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            idempotencyKey: `task-review:${row.id}`,
-          });
-        }
         return row;
       });
       return review;
@@ -489,20 +476,36 @@ export function lightControlService(db: Db) {
         }).where(and(eq(taskReviews.id, reviewId), eq(taskReviews.status, "pending")))
           .returning().then((rows) => rows[0] ?? null);
         if (!updated) throw conflict("This review was decided concurrently");
-        await tx.update(issues).set({ status: nextIssueStatus, updatedAt: new Date() }).where(eq(issues.id, issue.id));
-        if (input.decision === "changes_requested" && issue.assigneeAgentId) {
-          await tx.insert(agentWakeupRequests).values({
-            companyId: issue.companyId,
-            agentId: issue.assigneeAgentId,
-            source: "task_review",
-            triggerDetail: "changes_requested",
-            reason: `Changes requested on ${issue.identifier}`,
-            payload: { issueId: issue.id, reviewId, requiredChanges: input.requiredChanges },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            idempotencyKey: `task-review-changes:${reviewId}`,
-          });
+        const supersededRuns = await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: new Date(),
+            error: `Superseded by task review decision: ${input.decision}`,
+            errorCode: "task_review_decision_superseded",
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          ))
+          .returning({ wakeupRequestId: heartbeatRuns.wakeupRequestId });
+        const supersededWakeupIds = supersededRuns
+          .map((run) => run.wakeupRequestId)
+          .filter((id): id is string => Boolean(id));
+        if (supersededWakeupIds.length > 0) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: `Superseded by task review decision: ${input.decision}`,
+              updatedAt: new Date(),
+            })
+            .where(inArray(agentWakeupRequests.id, supersededWakeupIds));
         }
+        await tx.update(issues).set({ status: nextIssueStatus, updatedAt: new Date() }).where(eq(issues.id, issue.id));
         return updated;
       });
     },

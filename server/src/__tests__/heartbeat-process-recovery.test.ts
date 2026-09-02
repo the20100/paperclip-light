@@ -107,6 +107,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import { lightControlService } from "../services/light-control.ts";
 import {
   readHotRestartIntent,
   resolveLegacyHotRestartIntentPath,
@@ -3893,9 +3894,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("redacts secret-bearing successful-run progress before automatic manager review", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const reviewerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewing CTO",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: reviewerAgentId }).where(eq(agents.id, agentId));
     await db.update(companies).set({ executionProfile: "light" }).where(eq(companies.id, companyId));
     const bearerSecret = "live-bearer-token-value";
     const apiKeySecret = "sk-testsuccessfulhandoffsecret";
+    const blockerIssueId = randomUUID();
     const redactedDetectedSummary = redactDetectedSuccessfulRunProgressSummaryForBoard(
       `Next action noted: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
       { enabled: false },
@@ -3909,20 +3929,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         { enabled: false },
       ),
     ).toBe("Authorization: Bearer ***REDACTED*** OPENAI_API_KEY=***REDACTED***");
-
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: `I will inspect src/auth.ts next and then implement the fix. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
-      resultJson: {
-        message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
-      },
-      provider: "test",
-      model: "test-model",
-    });
     const heartbeat = heartbeatService(db);
+
+    // Clear any unconsumed one-shot implementations from earlier preflight tests.
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute
+      .mockImplementationOnce(async () => {
+        await db.insert(issues).values({
+          id: blockerIssueId,
+          companyId,
+          title: "Open dependency that must not prevent manager review",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          issueNumber: 2,
+          identifier: `BLOCK-${blockerIssueId.slice(0, 6)}`,
+        });
+        await db.insert(issueRelations).values({
+          companyId,
+          issueId: blockerIssueId,
+          relatedIssueId: issueId,
+          type: "blocks",
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: `I will inspect src/auth.ts next and then implement the fix. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+          resultJson: {
+            message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+          },
+          provider: "test",
+          model: "test-model",
+        };
+      })
+      .mockImplementationOnce(async (ctx: { runId: string }) => {
+        const review = await db
+          .select()
+          .from(taskReviews)
+          .where(eq(taskReviews.issueId, issueId))
+          .then((rows) => rows[0]!);
+        const staleWakeupRequestId = randomUUID();
+        const staleRunId = randomUUID();
+        await db.insert(agentWakeupRequests).values({
+          id: staleWakeupRequestId,
+          companyId,
+          agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "stale executor continuation",
+          payload: { issueId },
+          status: "queued",
+          runId: staleRunId,
+        });
+        await db.insert(heartbeatRuns).values({
+          id: staleRunId,
+          companyId,
+          agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "running",
+          startedAt: new Date(),
+          wakeupRequestId: staleWakeupRequestId,
+          contextSnapshot: { issueId, taskId: issueId },
+        });
+        await lightControlService(db).decideTaskReview(issueId, review.id, {
+          decision: "accepted",
+          summary: "Manager verified the implementation evidence.",
+          requiredChanges: [],
+          decidedRunId: ctx.runId,
+        }, {
+          actorType: "agent",
+          actorId: reviewerAgentId,
+          agentId: reviewerAgentId,
+          runId: ctx.runId,
+        });
+        await heartbeat.cancelIssueRuns(
+          companyId,
+          issueId,
+          "Superseded by task review decision: accepted",
+          {
+            errorCode: "task_review_decision_superseded",
+            excludeRunIds: [ctx.runId],
+          },
+        );
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Accepted the task review after inspecting the implementation evidence.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -3941,6 +4042,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(reviews?.[0]?.summary).not.toContain(bearerSecret);
     expect(reviews?.[0]?.summary).not.toContain(apiKeySecret);
 
+    const settledReview = await db
+      .select()
+      .from(taskReviews)
+      .where(eq(taskReviews.issueId, issueId))
+      .then((rows) => rows[0]);
+    expect(settledReview?.status).toBe("accepted");
+
+    const reviewWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, reviewerAgentId),
+        eq(agentWakeupRequests.reason, "execution_review_requested"),
+      ));
+    expect(reviewWakeups).toHaveLength(1);
+    expect(reviewWakeups[0]?.status).toBe("completed");
+    expect(reviewWakeups[0]?.runId).toBeTruthy();
+
+    const reviewerRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, reviewerAgentId));
+    expect(reviewerRuns).toHaveLength(1);
+    expect(reviewerRuns[0]?.status).toBe("succeeded");
+
+    const reviewedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(reviewedIssue?.status).toBe("done");
+
+    const staleExecutorRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.errorCode, "task_review_decision_superseded"),
+      ));
+    expect(staleExecutorRuns).toHaveLength(1);
+    expect(staleExecutorRuns[0]?.status).toBe("cancelled");
+
     const activity = await db
       .select()
       .from(activityLog)
@@ -3950,6 +4089,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const activityDetailsText = JSON.stringify(reviewActivity?.details ?? {});
     expect(activityDetailsText).not.toContain(bearerSecret);
     expect(activityDetailsText).not.toContain(apiKeySecret);
+  });
+
+  it("runs a pending Light manager review when a legacy issue is already marked blocked", async () => {
+    const { companyId, agentId: reviewerAgentId, runId, issueId } =
+      await seedInReviewParticipantRunFixture();
+    const executorAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: executorAgentId,
+      companyId,
+      name: "CodexImplementor",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(companies).set({ executionProfile: "light" }).where(eq(companies.id, companyId));
+    await db.update(issues).set({
+      status: "blocked",
+      assigneeAgentId: executorAgentId,
+      executionState: null,
+    }).where(eq(issues.id, issueId));
+    await db.insert(taskReviews).values({
+      companyId,
+      issueId,
+      revision: 1,
+      requestedByAgentId: executorAgentId,
+      reviewerAgentId,
+      status: "pending",
+      summary: "Legacy review still awaiting its manager decision.",
+    });
+
+    mockAdapterExecute.mockReset().mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Reviewed the legacy blocked task.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    expect(settledRun?.status).toBe("succeeded");
+    expect(settledRun?.errorCode).not.toBe("issue_assignee_changed");
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
