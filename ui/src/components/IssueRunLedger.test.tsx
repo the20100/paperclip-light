@@ -174,7 +174,7 @@ describe("IssueRunLedger", () => {
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced",
-      "plan_only",
+      "needs_followup",
       "empty_response",
       "blocked",
       "failed",
@@ -197,7 +197,7 @@ describe("IssueRunLedger", () => {
     });
 
     expect(container.textContent).toContain("Advanced");
-    expect(container.textContent).toContain("Plan only");
+    expect(container.textContent).toContain("Needs follow-up");
     expect(container.textContent).toContain("Empty response");
     expect(container.textContent).toContain("Blocked");
     expect(container.textContent).toContain("Failed");

@@ -303,14 +303,14 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
   });
 
-  it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {
+  it("does not treat classified needs-followup text as productive handoff evidence", () => {
     expect(decide({
       detectedProgressSummary: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
       livenessState: "needs_followup",
       hasPersistedMonitor: true,
     })).toEqual({
       kind: "skip",
-      reason: "persisted issue monitor owns the next action",
+      reason: "successful run did not produce handoff-relevant progress",
     });
   });
 

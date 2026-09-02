@@ -18,7 +18,7 @@ const baseInput = {
 };
 
 describe("run liveness classifier", () => {
-  it("classifies text-only future work as plan_only", () => {
+  it("classifies text-only future work as needs_followup", () => {
     const classification = classifyRunLiveness({
       ...baseInput,
       resultJson: {
@@ -26,7 +26,7 @@ describe("run liveness classifier", () => {
       },
     });
 
-    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.livenessState).toBe("needs_followup");
     expect(classification.actionability).toBe("runnable");
     expect(classification.nextAction).toContain("inspect the repo");
   });
@@ -70,7 +70,7 @@ describe("run liveness classifier", () => {
       },
     });
 
-    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.livenessState).toBe("needs_followup");
     expect(classification.lastUsefulActionAt).toBeNull();
   });
 
@@ -149,7 +149,7 @@ describe("run liveness classifier", () => {
       ],
     });
 
-    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.livenessState).toBe("needs_followup");
     expect(classification.actionability).toBe("runnable");
     expect(classification.nextAction).toBe("run npm test and report the row counts.");
   });

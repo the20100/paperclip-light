@@ -45,50 +45,22 @@ function agent(overrides: Record<string, unknown> = {}) {
 }
 
 describe("run liveness continuations", () => {
-  it("enqueues the first plan_only continuation for the same issue and assignee", () => {
+  it("does not continue narrated future work for the same agent", () => {
     const decision = decideRunLivenessContinuation({
       run: run(),
       issue: issue(),
       agent: agent(),
-      livenessState: "plan_only",
+      livenessState: "needs_followup",
       livenessReason: "Planned without acting",
       nextAction: "Take the first concrete action now.",
       budgetBlocked: false,
       idempotentWakeExists: false,
     });
 
-    expect(decision.kind).toBe("enqueue");
-    if (decision.kind !== "enqueue") return;
-    expect(decision.nextAttempt).toBe(1);
-    expect(decision.idempotencyKey).toBe(
-      buildRunLivenessContinuationIdempotencyKey({
-        issueId,
-        sourceRunId: runId,
-        livenessState: "plan_only",
-        nextAttempt: 1,
-      }),
-    );
-    expect(decision.payload).toMatchObject({
-      issueId,
-      sourceRunId: runId,
-      livenessState: "plan_only",
-      livenessReason: "Planned without acting",
-      continuationAttempt: 1,
-      maxContinuationAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
-      instruction: "Take the first concrete action now.",
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "liveness state is not actionable for continuation",
     });
-    expect(decision.payload).not.toHaveProperty("modelProfile");
-    expect(decision.contextSnapshot).toMatchObject({
-      issueId,
-      wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
-      livenessContinuationAttempt: 1,
-      livenessContinuationMaxAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
-      livenessContinuationSourceRunId: runId,
-      livenessContinuationState: "plan_only",
-      livenessContinuationReason: "Planned without acting",
-      livenessContinuationInstruction: "Take the first concrete action now.",
-    });
-    expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
   });
 
   it("enqueues the second empty_response continuation", () => {
@@ -131,7 +103,7 @@ describe("run liveness continuations", () => {
       run: run({ continuationAttempt: 2 }),
       issue: issue(),
       agent: agent(),
-      livenessState: "plan_only",
+      livenessState: "empty_response",
       livenessReason: "Still planning",
       nextAction: null,
       budgetBlocked: false,
@@ -160,7 +132,7 @@ describe("run liveness continuations", () => {
         run: run(),
         issue: guarded.issue ?? issue(),
         agent: guarded.agent ?? agent(),
-        livenessState: guarded.livenessState ?? "plan_only",
+        livenessState: guarded.livenessState ?? "empty_response",
         livenessReason: "No progress",
         nextAction: null,
         budgetBlocked: guarded.budgetBlocked ?? false,

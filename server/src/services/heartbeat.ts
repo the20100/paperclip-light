@@ -4163,6 +4163,52 @@ export function resolveCacheAdjustedCostUsd(input: {
   return null;
 }
 
+export function resolveLightRegistryCostUsd(input: {
+  reportedCostUsd?: number | null;
+  cacheAdjustedCostUsd?: number | null;
+  billingType?: BillingType | null;
+  provider?: string | null;
+  model?: string | null;
+  usage?: UsageSummary | null;
+  companyConfig?: LightCompanyConfig | null;
+}) {
+  const reported = resolveCacheAdjustedCostUsd({
+    costUsd: input.reportedCostUsd,
+    cacheAdjustedCostUsd: input.cacheAdjustedCostUsd,
+  });
+  if (reported !== null && reported > 0) return reported;
+  if (input.billingType === "subscription_included" || !input.usage || !input.companyConfig) {
+    return reported;
+  }
+
+  const provider = readNonEmptyString(input.provider)?.toLowerCase() ?? null;
+  const model = readNonEmptyString(input.model);
+  if (!model) return reported;
+  const unqualifiedModel = provider && model.toLowerCase().startsWith(`${provider}/`)
+    ? model.slice(provider.length + 1)
+    : model;
+  const profile = input.companyConfig.modelRegistry.find((candidate) => {
+    if (provider && candidate.provider.toLowerCase() !== provider) return false;
+    return candidate.modelId === model
+      || candidate.modelId === unqualifiedModel
+      || `${candidate.provider}/${candidate.modelId}` === model;
+  });
+  if (!profile) return reported;
+  const prices = [
+    profile.inputPricePerMillion,
+    profile.cachedInputPricePerMillion,
+    profile.outputPricePerMillion,
+  ];
+  if (prices.every((price) => price == null)) return reported;
+
+  const estimated = (
+    Math.max(0, input.usage.inputTokens ?? 0) * (profile.inputPricePerMillion ?? 0)
+    + Math.max(0, input.usage.cachedInputTokens ?? 0) * (profile.cachedInputPricePerMillion ?? profile.inputPricePerMillion ?? 0)
+    + Math.max(0, input.usage.outputTokens ?? 0) * (profile.outputPricePerMillion ?? 0)
+  ) / 1_000_000;
+  return estimated > 0 ? estimated : reported;
+}
+
 export async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -9645,7 +9691,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
     const livenessState = run.livenessState as RunLivenessState | null;
-    if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
+    if (livenessState !== "empty_response") return;
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);
@@ -10127,6 +10173,78 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         missingDisposition: "clear_next_step",
         detectedProgressSummary,
         issue: issueUiLink(issue),
+      },
+    });
+  }
+
+  async function handleLightAutomaticTaskReview(run: typeof heartbeatRuns.$inferSelect) {
+    if (run.status !== "succeeded") return;
+    const livenessState = run.livenessState as RunLivenessState | null;
+    if (livenessState !== "advanced" && livenessState !== "needs_followup") return;
+
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!issueId) return;
+
+    const [company, issue] = await Promise.all([
+      db.select({ executionProfile: companies.executionProfile })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .then((rows) => rows[0] ?? null),
+      db.select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionState: issues.executionState,
+      })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (company?.executionProfile !== "light" || !issue) return;
+    if (
+      issue.status !== "in_progress"
+      || issue.assigneeAgentId !== run.agentId
+      || issue.assigneeUserId
+      || issue.executionState
+    ) return;
+
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const evidence = buildDetectedSuccessfulRunProgressSummary(run, currentUserRedactionOptions)
+      ?? run.livenessReason
+      ?? "The run ended without a recorded disposition.";
+    const review = await lightControlService(db).requestTaskReview(issue.id, {
+      summary: [
+        livenessState === "advanced"
+          ? "Automatic manager review: the run produced evidence but left the task in progress."
+          : "Automatic manager review: the run described future work without concrete action evidence.",
+        evidence,
+      ].join(" ").slice(0, 8_000),
+      sourceRunId: run.id,
+      reviewerAgentId: null,
+    }, {
+      actorType: "agent",
+      actorId: run.agentId,
+      agentId: run.agentId,
+      runId: run.id,
+    });
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "issue.light_manager_review_requested",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        issueIdentifier: issue.identifier,
+        reviewId: review.id,
+        reviewerAgentId: review.reviewerAgentId,
+        livenessState,
       },
     });
   }
@@ -17512,7 +17630,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
-      const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
+      const cacheAdjustedCostUsd = resolveLightRegistryCostUsd({
+        reportedCostUsd: adapterResult.costUsd,
+        cacheAdjustedCostUsd: adapterResult.cacheAdjustedCostUsd,
+        billingType: normalizeLedgerBillingType(adapterResult.billingType),
+        provider: adapterResult.provider,
+        model: adapterResult.model,
+        usage: normalizedUsage,
+        companyConfig: lightExecutionEnabled
+          ? lightCompanyConfigSchema.parse(companyExecutionSettings?.lightConfig ?? {})
+          : null,
+      });
       const usageJson =
         normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
           ? ({
@@ -17706,6 +17834,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
+        await handleLightAutomaticTaskReview(livenessRun).catch((reviewError) => {
+          logger.warn(
+            { err: reviewError, runId: livenessRun.id, agentId: agent.id },
+            "failed to route unresolved Light task to manager review",
+          );
+        });
         await handleIssueReviewPathDisposition(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -17747,7 +17881,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(agent, finalizedRun, {
+          ...adapterResult,
+          cacheAdjustedCostUsd,
+        }, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {

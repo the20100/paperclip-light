@@ -191,7 +191,7 @@ describe("recovery classifier boundary", () => {
         companyId,
         status: "idle",
       } as never,
-      livenessState: "plan_only" as const,
+      livenessState: "empty_response" as const,
       livenessReason: "Planned without acting",
       nextAction: "Take the first concrete action.",
       budgetBlocked: false,
@@ -234,9 +234,9 @@ describe("recovery classifier boundary", () => {
     expect(buildRunLivenessContinuationIdempotencyKey({
       issueId,
       sourceRunId: runId,
-      livenessState: "plan_only",
+      livenessState: "empty_response",
       nextAttempt: 1,
-    })).toBe("run_liveness_continuation:issue-1:run-1:plan_only:1");
+    })).toBe("run_liveness_continuation:issue-1:run-1:empty_response:1");
   });
 
   it("classifies stranded recovery origins as recovery-owned work", () => {

@@ -355,7 +355,11 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (looksLikePlanningOnly(input) || nextAction) {
     if (actionability === "runnable") {
-      return output("plan_only", "Run described runnable future work without concrete action evidence", nextAction);
+      // A narrated next step is not progress.  Keep the run terminal and hand the
+      // unresolved task to the review/recovery layer instead of waking the same
+      // agent again. The old planning-without-action state fed an automatic
+      // continuation loop whose corrective wakes could lose their lineage marker.
+      return output("needs_followup", "Run described runnable future work without concrete action evidence", nextAction);
     }
     return output("needs_followup", "Run described future work that is not safe to auto-continue", nextAction);
   }

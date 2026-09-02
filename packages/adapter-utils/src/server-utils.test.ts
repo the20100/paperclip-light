@@ -2295,7 +2295,7 @@ describe("renderPaperclipWakePrompt", () => {
         attempt: 2,
         maxAttempts: 2,
         sourceRunId: "run-1",
-        state: "plan_only",
+        state: "needs_followup",
         reason: "Run described future work without concrete action evidence",
         instruction: "Take the first concrete action now.",
       },
@@ -2321,7 +2321,7 @@ describe("renderPaperclipWakePrompt", () => {
         attempt: 2,
         maxAttempts: 2,
         sourceRunId: "run-1",
-        state: "plan_only",
+        state: "needs_followup",
         instruction: "Take the first concrete action now.",
       },
       childIssueSummaries: [
@@ -2338,7 +2338,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Run liveness continuation:");
     expect(prompt).toContain("- attempt: 2/2");
     expect(prompt).toContain("- source run: run-1");
-    expect(prompt).toContain("- liveness state: plan_only");
+    expect(prompt).toContain("- liveness state: needs_followup");
     expect(prompt).toContain(
       "- reason: Run described future work without concrete action evidence",
     );

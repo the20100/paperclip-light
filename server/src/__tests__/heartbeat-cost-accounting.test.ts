@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   resolveCacheAdjustedCostUsd,
+  resolveLightRegistryCostUsd,
   resolveLedgerCostStatus,
 } from "../services/heartbeat.js";
 
@@ -73,5 +74,36 @@ describe("heartbeat cost accounting", () => {
       costUsd: 3.1,
       cacheAdjustedCostUsd: 1.5,
     })).toBe(1.5);
+  });
+
+  it("uses configured Light model prices when a metered provider reports zero", () => {
+    expect(resolveLightRegistryCostUsd({
+      reportedCostUsd: 0,
+      billingType: "unknown",
+      provider: "umans",
+      model: "umans/umans-deepseek-v4-flash-0731",
+      usage: { inputTokens: 1_000_000, cachedInputTokens: 1_000_000, outputTokens: 1_000_000 },
+      companyConfig: {
+        ...({} as any),
+        modelRegistry: [{
+          provider: "umans",
+          modelId: "umans-deepseek-v4-flash-0731",
+          inputPricePerMillion: 0.14,
+          cachedInputPricePerMillion: 0.028,
+          outputPricePerMillion: 0.28,
+        }],
+      },
+    })).toBeCloseTo(0.448);
+  });
+
+  it("does not estimate subscription-included usage from the registry", () => {
+    expect(resolveLightRegistryCostUsd({
+      reportedCostUsd: null,
+      billingType: "subscription_included",
+      provider: "umans",
+      model: "umans-deepseek-v4-flash-0731",
+      usage: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0 },
+      companyConfig: { ...({} as any), modelRegistry: [] },
+    })).toBeNull();
   });
 });

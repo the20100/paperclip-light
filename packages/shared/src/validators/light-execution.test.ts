@@ -14,7 +14,7 @@ describe("Paperclip Light contracts", () => {
       maxTaskDepth: 3,
       maxChildrenPerTask: 12,
       maxTasksPerTree: 50,
-      maxReviewCycles: 3,
+      maxReviewCycles: 10,
       maxCrossAgentMentionsPerTree: 5,
       taskSessionIsolation: true,
       maxSessionRuns: 6,

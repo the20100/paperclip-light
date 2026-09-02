@@ -420,6 +420,19 @@ export function lightControlService(db: Db) {
       const { config } = await requireLightCompany(db, issue.companyId);
       const review = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-review:${issueId}`}, 0))`);
+        const pending = await tx.select().from(taskReviews).where(and(
+          eq(taskReviews.issueId, issueId),
+          eq(taskReviews.status, "pending"),
+        )).orderBy(desc(taskReviews.revision)).limit(1).then((rows) => rows[0] ?? null);
+        if (pending) return pending;
+        const sourceRunId = input.sourceRunId ?? actor.runId;
+        if (sourceRunId) {
+          const existing = await tx.select().from(taskReviews).where(and(
+            eq(taskReviews.issueId, issueId),
+            eq(taskReviews.sourceRunId, sourceRunId),
+          )).then((rows) => rows[0] ?? null);
+          if (existing) return existing;
+        }
         const revision = await tx.select({ value: sql<number>`coalesce(max(${taskReviews.revision}), 0) + 1` })
           .from(taskReviews).where(eq(taskReviews.issueId, issueId)).then((rows) => Number(rows[0]?.value ?? 1));
         if (revision > config.maxReviewCycles) {
@@ -432,7 +445,7 @@ export function lightControlService(db: Db) {
           requestedByAgentId: requesterAgentId,
           reviewerAgentId,
           summary: input.summary,
-          sourceRunId: input.sourceRunId ?? actor.runId,
+          sourceRunId,
         }).returning().then((rows) => rows[0]!);
         await tx.update(issues).set({ status: "in_review", updatedAt: new Date() }).where(eq(issues.id, issueId));
         if (reviewerAgentId) {

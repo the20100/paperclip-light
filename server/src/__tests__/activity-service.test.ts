@@ -419,12 +419,12 @@ describeEmbeddedPostgres("activity service", () => {
       service,
       companyId,
       issueId,
-      (entry) => entry.runId === runId && entry.livenessState === "plan_only",
+      (entry) => entry.runId === runId && entry.livenessState === "needs_followup",
     );
 
     expect(backfilledRun).toMatchObject({
       runId,
-      livenessState: "plan_only",
+      livenessState: "needs_followup",
       livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
@@ -525,12 +525,12 @@ describeEmbeddedPostgres("activity service", () => {
       service,
       companyId,
       issueId,
-      (entry) => entry.runId === runId && entry.livenessState === "plan_only",
+      (entry) => entry.runId === runId && entry.livenessState === "needs_followup",
     );
 
     expect(backfilledRun).toMatchObject({
       runId,
-      livenessState: "plan_only",
+      livenessState: "needs_followup",
       livenessReason: "Run described runnable future work without concrete action evidence",
       lastUsefulActionAt: null,
     });

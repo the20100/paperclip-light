@@ -29,7 +29,7 @@ Attach deliverables before finishing: `pc task attach TASK path/to/result.md`.
 
 Before an interruption with local changes: `pc checkpoint save PROJECT TASK paths... -s "state"`.
 
-Finish once with `pc task submit TASK -s "Result; checks; artifact or URL; risk."`; managers decide with `pc review decide TASK REVIEW accepted|changes_requested -s "reason"`.
+Finish once with `pc task submit TASK -s "Result; checks; artifact or URL; risk."`; this routes review to your direct manager or an active fallback agent. A manager woken with a `reviewId` must inspect the task evidence and decide in the same run with `pc review decide TASK REVIEW accepted|changes_requested|blocked|cancelled -s "reason"`. Do not leave an ordinary review for a human when an eligible agent can decide it.
 
 Before email, payment, publication, deploy, deletion, account creation, or secret change: `pc action request COMPANY KIND -s "exact action" -k "stable-key" --task TASK --project PROJECT`. Add `--target-branch BRANCH` for deploys, then stop until approved. Resume an approved deploy with `pc repo push PROJECT TASK BRANCH --approval ACTION_ID`; an approval is single-use.
 

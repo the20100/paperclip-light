@@ -34,7 +34,6 @@ const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
   "advanced",
   "completed",
   "blocked",
-  "needs_followup",
 ]);
 
 const IDEMPOTENT_HANDOFF_WAKE_STATUSES = [
@@ -356,7 +355,10 @@ function isProductiveSuccessfulRun(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
 }) {
-  if (input.livenessState && PRODUCTIVE_SUCCESS_LIVENESS_STATES.has(input.livenessState)) return true;
+  // Once liveness has been classified, it is authoritative. Falling back to a
+  // textual summary for a classified no-action run made `needs_followup` look
+  // productive and minted another same-agent corrective wake.
+  if (input.livenessState) return PRODUCTIVE_SUCCESS_LIVENESS_STATES.has(input.livenessState);
   return Boolean(input.detectedProgressSummary);
 }
 

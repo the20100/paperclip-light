@@ -1041,7 +1041,7 @@ export const storybookIssueRuns: RunForIssue[] = [
     usageJson: { costCents: 24, inputTokens: 9100, outputTokens: 1100 },
     resultJson: { stopReason: "completed" },
     logBytes: 9800,
-    livenessState: "plan_only",
+    livenessState: "needs_followup",
     livenessReason: "Identified Storybook coverage gaps but did not edit files in that run.",
     continuationAttempt: 0,
     lastUsefulActionAt: null,

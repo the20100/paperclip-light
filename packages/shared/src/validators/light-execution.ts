@@ -44,7 +44,7 @@ export const lightCompanyConfigSchema = z
     maxChildrenPerTask: z.number().int().min(1).max(100).default(12),
     maxTasksPerTree: z.number().int().min(2).max(1_000).default(50),
     technicalRetryLimit: z.number().int().min(0).max(10).default(2),
-    maxReviewCycles: z.number().int().min(1).max(10).default(3),
+    maxReviewCycles: z.number().int().min(1).max(10).default(10),
     maxCrossAgentMentionsPerTree: z.number().int().min(0).max(100).default(5),
     taskSessionIsolation: z.boolean().default(true),
     maxSessionRuns: z.number().int().min(1).max(100).default(6),

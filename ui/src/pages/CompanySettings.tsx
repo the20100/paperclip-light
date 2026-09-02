@@ -35,7 +35,7 @@ const DEFAULT_LIGHT_CONFIG: LightCompanyConfig = {
   maxChildrenPerTask: 12,
   maxTasksPerTree: 50,
   technicalRetryLimit: 2,
-  maxReviewCycles: 3,
+  maxReviewCycles: 10,
   maxCrossAgentMentionsPerTree: 5,
   taskSessionIsolation: true,
   maxSessionRuns: 6,

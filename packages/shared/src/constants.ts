@@ -936,7 +936,6 @@ export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
 export const RUN_LIVENESS_STATES = [
   "completed",
   "advanced",
-  "plan_only",
   "empty_response",
   "blocked",
   "failed",

@@ -91,6 +91,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 **Step 7 — Do the work.** Use your tools and capabilities. Execution contract:
 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
+- Under the Paperclip Light profile, never finish by directly parking completed work in `in_review`. Submit it with `pc task submit "$PAPERCLIP_TASK_ID" -s "Result; checks; artifact or URL; risk."`; this creates a structured review owned by your direct manager (or the configured active fallback reviewer). A manager woken with a `reviewId` must inspect the evidence and call `pc review decide TASK REVIEW accepted|changes_requested|blocked|cancelled -s "reason"`. Ordinary reviews belong to agents; request a human only for an irreversible external effect, missing authority, or a decision no eligible agent can make.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
