@@ -529,6 +529,9 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+const UNBOUND_WAKEUP_RELAY_BATCH_SIZE = 50;
+const UNBOUND_WAKEUP_RELAY_RETRY_MS = 60 * 1000;
+const UNBOUND_WAKEUP_RELAY_STALE_CLAIM_MS = 2 * 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
@@ -14685,6 +14688,132 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  /**
+   * Relays durable wakeup outbox rows that were committed without a heartbeat
+   * run. Most wakeups create both rows atomically, but resource promotion and
+   * older integrations can only persist the request inside their transaction.
+   * Without this relay those requests remain `queued` forever while the issue
+   * misleadingly appears to have a live execution path.
+   *
+   * A compare-and-set claim prevents concurrent scheduler ticks from dispatching
+   * the same row. Stale claims are recoverable after a process restart, and
+   * failed dispatches use a bounded retry cadence instead of hot-looping.
+   */
+  async function relayUnboundQueuedWakeups(opts: { now?: Date; companyId?: string } = {}) {
+    if ((await getSchedulingSuppression()).suppressed) {
+      return { scanned: 0, relayed: 0, deferred: 0, failed: 0 };
+    }
+
+    const at = opts.now ?? new Date();
+    const retryCutoff = new Date(at.getTime() - UNBOUND_WAKEUP_RELAY_RETRY_MS);
+    const staleClaimCutoff = new Date(at.getTime() - UNBOUND_WAKEUP_RELAY_STALE_CLAIM_MS);
+    const relayable = or(
+      and(
+        eq(agentWakeupRequests.status, "queued"),
+        or(isNull(agentWakeupRequests.error), lte(agentWakeupRequests.updatedAt, retryCutoff)),
+      ),
+      and(
+        eq(agentWakeupRequests.status, "claimed"),
+        lte(agentWakeupRequests.updatedAt, staleClaimCutoff),
+      ),
+    );
+    const candidates = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        isNull(agentWakeupRequests.runId),
+        relayable,
+        opts.companyId ? eq(agentWakeupRequests.companyId, opts.companyId) : undefined,
+      ))
+      .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id))
+      .limit(UNBOUND_WAKEUP_RELAY_BATCH_SIZE);
+
+    let relayed = 0;
+    let deferred = 0;
+    let failed = 0;
+    for (const candidate of candidates) {
+      const claimed = await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "claimed",
+          claimedAt: at,
+          error: null,
+          coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+          updatedAt: at,
+        })
+        .where(and(
+          eq(agentWakeupRequests.id, candidate.id),
+          isNull(agentWakeupRequests.runId),
+          relayable,
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!claimed) continue;
+
+      try {
+        const source = ["timer", "assignment", "on_demand", "automation"].includes(claimed.source)
+          ? claimed.source as NonNullable<WakeupOptions["source"]>
+          : "automation";
+        const triggerDetail = ["manual", "ping", "callback", "system"].includes(claimed.triggerDetail ?? "")
+          ? claimed.triggerDetail as NonNullable<WakeupOptions["triggerDetail"]>
+          : "system";
+        const requestedByActorType = ["user", "agent", "system"].includes(claimed.requestedByActorType ?? "")
+          ? claimed.requestedByActorType as NonNullable<WakeupOptions["requestedByActorType"]>
+          : "system";
+        const run = await enqueueWakeup(claimed.agentId, {
+          source,
+          triggerDetail,
+          reason: claimed.reason,
+          payload: parseObject(claimed.payload),
+          requestedByActorType,
+          requestedByActorId: claimed.requestedByActorId ?? "wakeup_outbox_relay",
+          contextSnapshot: {
+            relayedWakeupRequestId: claimed.id,
+            source: "wakeup_outbox_relay",
+          },
+        });
+
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "coalesced",
+            runId: run?.id ?? null,
+            finishedAt: new Date(),
+            error: null,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agentWakeupRequests.id, claimed.id),
+            eq(agentWakeupRequests.status, "claimed"),
+            isNull(agentWakeupRequests.runId),
+          ));
+        if (run) relayed += 1;
+        else deferred += 1;
+      } catch {
+        failed += 1;
+        await db
+          .update(agentWakeupRequests)
+          .set({
+            status: "queued",
+            claimedAt: null,
+            error: "Durable wakeup dispatch failed; retry scheduled.",
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agentWakeupRequests.id, claimed.id),
+            eq(agentWakeupRequests.status, "claimed"),
+            isNull(agentWakeupRequests.runId),
+          ));
+        logger.warn(
+          { wakeupRequestId: claimed.id, agentId: claimed.agentId },
+          "durable unbound wakeup dispatch failed; retry scheduled",
+        );
+      }
+    }
+
+    return { scanned: candidates.length, relayed, deferred, failed };
+  }
+
   async function reconcileStrandedAssignedIssues() {
     return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
@@ -20990,6 +21119,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+
+    relayUnboundQueuedWakeups,
 
     scheduleBoundedRetry: async (
       runId: string,

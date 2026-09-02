@@ -1106,9 +1106,8 @@ export async function startServer(): Promise<StartedServer> {
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
   const lightMaintenance = lightMaintenanceService(db as any);
-  const scheduleLightMaintenanceSweep = () => {
-    if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(lightMaintenance
+  const runLightMaintenanceSweep = async (startup = false) => {
+    await lightMaintenance
       .sweep()
       .then((result) => {
         if (
@@ -1124,13 +1123,31 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .catch((err) => {
-        logger.error({ err }, "Paperclip Light deterministic maintenance sweep failed");
-      }));
+        logger.error(
+          { err },
+          startup
+            ? "Paperclip Light startup maintenance sweep failed"
+            : "Paperclip Light deterministic maintenance sweep failed",
+        );
+      });
+
+    await environmentLeaseCleanupHeartbeat
+      .relayUnboundQueuedWakeups()
+      .then((result) => {
+        if (result.relayed > 0 || result.deferred > 0 || result.failed > 0) {
+          logger.info(result, "durable unbound wakeup relay completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "durable unbound wakeup relay failed");
+      });
+  };
+  const scheduleLightMaintenanceSweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(runLightMaintenanceSweep());
   };
 
-  await lightMaintenance.sweep().catch((err) => {
-    logger.error({ err }, "Paperclip Light startup maintenance sweep failed");
-  });
+  await runLightMaintenanceSweep(true);
 
   await questionResponseDeliveries.sweepPending().then((result) => {
     if (result.scanned > 0) {

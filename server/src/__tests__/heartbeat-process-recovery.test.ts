@@ -5237,6 +5237,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("relays a durable unbound wakeup into a real heartbeat run", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const wakeupRequestId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "file_reservation",
+      triggerDetail: "files_available",
+      reason: "Reserved files became available",
+      payload: { issueId, reservationRequestId: randomUUID() },
+      status: "queued",
+      requestedByActorType: "system",
+      requestedByActorId: "light_repository_broker",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.relayUnboundQueuedWakeups({ companyId });
+
+    expect(result).toEqual({ scanned: 1, relayed: 1, deferred: 0, failed: 0 });
+    const relayed = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(relayed).toMatchObject({
+      status: "coalesced",
+      agentId,
+    });
+    expect(relayed?.runId).toBeTruthy();
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, relayed!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      relayedWakeupRequestId: wakeupRequestId,
+      source: "wakeup_outbox_relay",
+    });
+    if (run) await waitForRunToSettle(heartbeat, run.id);
+  });
+
   it("dispatches assigned todo work with no prior run as a normal assignment wake", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     const heartbeat = heartbeatService(db);
