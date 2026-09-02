@@ -3149,6 +3149,21 @@ function classifyError(
     };
   }
   const lower = message.toLowerCase();
+  // Codex and Claude can report an inaccessible model as a failed ACP turn
+  // (rather than a configuration error).  Treating that as a generic turn
+  // failure makes Paperclip retry the exact same unavailable model and can
+  // strand its issue behind a stale execution path.  The heartbeat service
+  // already has a dedicated, non-retrying recovery path for `model_not_found`.
+  const modelUnavailable =
+    lower.includes("issue with the selected model") ||
+    /(?:selected|configured|requested) model[^\n]{0,160}(?:may not exist|not exist|not available|no access|don't have access|do not have access)/.test(lower) ||
+    /model[^\n]{0,160}(?:not found|unavailable)/.test(lower);
+  if (modelUnavailable) {
+    return {
+      errorCode: "model_not_found",
+      errorMeta: { category: "configuration", ...baseMeta },
+    };
+  }
   const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
   if (authLike) {
     return {
@@ -4617,18 +4632,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // path keeps it set, so the run root span closes with error status. A
         // completed terminal with a lost duplex channel keeps the flag set.
         runFailed = turnSucceeded ? false : true;
+        const terminalErrorCode = terminal.status === "failed"
+          ? classifyError(new Error(errorMessage ?? terminalStopReason ?? terminal.status), "turn").errorCode
+          : timedOut
+            ? "acpx_timeout"
+            : channelLost
+              ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+              : null;
         capturedResult = {
           exitCode: turnSucceeded ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed"
-            ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
-                : null,
+          errorCode: terminalErrorCode,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
