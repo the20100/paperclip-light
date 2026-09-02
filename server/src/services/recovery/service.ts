@@ -3560,6 +3560,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      dependencyBlocked: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -3679,6 +3680,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
         continue;
+      }
+      if (
+        issue.status !== "in_review"
+        && classifyContinuationFailure(latestRun).errorCode !== CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE
+      ) {
+        const dependencyReadiness = await issuesSvc.getDependencyReadiness(issue.id);
+        if (!dependencyReadiness.isDependencyReady) {
+          const updated = await issuesSvc.update(issue.id, {
+            status: "blocked",
+            blockedByIssueIds: dependencyReadiness.blockerIssueIds,
+          });
+          if (updated) {
+            result.dependencyBlocked += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
       const recoveryNow = new Date();
       const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId

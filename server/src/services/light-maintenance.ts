@@ -10,6 +10,8 @@ import {
 } from "@paperclipai/db";
 import { lightCompanyConfigSchema } from "@paperclipai/shared";
 import { getRunLogStore, type RunLogStore } from "./run-log-store.js";
+import { lightFileReservationService } from "./light-execution.js";
+import { logger } from "../middleware/logger.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 const STALE_REPOSITORY_OPERATION_MS = 60 * 60 * 1_000;
@@ -18,6 +20,9 @@ const RUN_LOG_PRUNE_BATCH_SIZE = 100;
 export interface LightMaintenanceSweepResult {
   companiesChecked: number;
   reservationsOrphaned: number;
+  reservationsReleased: number;
+  reservationsPromoted: number;
+  reservationSweepFailures: number;
   repositoryOperationsFailed: number;
   humanActionsExpired: number;
   memoryItemsExpired: number;
@@ -32,6 +37,7 @@ export function lightMaintenanceService(
 ) {
   const runLogStore = options.runLogStore ?? getRunLogStore();
   const now = options.now ?? (() => new Date());
+  const reservationBroker = lightFileReservationService(db);
   const lastSweepAtByCompany = new Map<string, number>();
 
   async function pruneRunLogs(companyId: string, retentionDays: number, at: Date) {
@@ -96,6 +102,9 @@ export function lightMaintenanceService(
       const result: LightMaintenanceSweepResult = {
         companiesChecked: 0,
         reservationsOrphaned: 0,
+        reservationsReleased: 0,
+        reservationsPromoted: 0,
+        reservationSweepFailures: 0,
         repositoryOperationsFailed: 0,
         humanActionsExpired: 0,
         memoryItemsExpired: 0,
@@ -142,6 +151,25 @@ export function lightMaintenanceService(
           ))
           .returning({ id: fileReservations.id });
         result.reservationsOrphaned += orphaned.length;
+
+        const reservationProjects = await db
+          .selectDistinct({ projectId: fileReservations.projectId })
+          .from(fileReservations)
+          .where(and(
+            eq(fileReservations.companyId, company.id),
+            inArray(fileReservations.status, ["active", "orphaned", "waiting"]),
+          ));
+        for (const { projectId } of reservationProjects) {
+          try {
+            const reconciled = await reservationBroker.reconcileExpired(projectId);
+            result.reservationsOrphaned += reconciled.orphaned;
+            result.reservationsReleased += reconciled.released.length;
+            result.reservationsPromoted += reconciled.promoted.length;
+          } catch (error) {
+            result.reservationSweepFailures += 1;
+            logger.warn({ error, companyId: company.id, projectId }, "Light file reservation reconciliation failed");
+          }
+        }
 
         const staleOperationCutoff = new Date(at.getTime() - STALE_REPOSITORY_OPERATION_MS);
         const failedOperations = await db

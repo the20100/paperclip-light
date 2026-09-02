@@ -35,7 +35,12 @@ import {
   type TaskReviewRequestInput,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import type { LightExecutionActor } from "./light-execution.js";
+import { logger } from "../middleware/logger.js";
+import {
+  lightFileReservationService,
+  lightTaskCheckpointService,
+  type LightExecutionActor,
+} from "./light-execution.js";
 
 const sha256 = (value: string) => createHash("sha256").update(value.normalize("NFC")).digest("hex");
 
@@ -241,6 +246,8 @@ export function selectProjectMemoryItems<T extends ProjectMemoryCandidate>(
 }
 
 export function lightControlService(db: Db) {
+  const reservations = lightFileReservationService(db);
+  const checkpoints = lightTaskCheckpointService(db);
   return {
     listExecutionEvents: async (companyId: string, options: { issueId?: string; limit?: number } = {}) => {
       await requireLightCompany(db, companyId);
@@ -450,6 +457,28 @@ export function lightControlService(db: Db) {
         await tx.update(issues).set({ status: "in_review", updatedAt: new Date() }).where(eq(issues.id, issueId));
         return row;
       });
+      if (issue.projectId) {
+        try {
+          const active = await reservations.list(issue.projectId, { issueId: issue.id, status: "active" });
+          const activePaths = [...new Set(active.rows.map((row) => row.normalizedPath))];
+          if (activePaths.length > 0 && issue.assigneeAgentId) {
+            await checkpoints.capture(issue.projectId, issue.id, {
+              paths: activePaths,
+              agentId: issue.assigneeAgentId,
+              runId: actor.runId,
+              summary: "Automatic checkpoint before task entered in_review",
+            }, actor).catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              if (!message.includes("No local changes")) {
+                logger.warn({ error, issueId: issue.id }, "failed to capture Light review checkpoint");
+              }
+            });
+          }
+          await reservations.releaseForIssueLifecycle(issue.projectId, issue.id, "task_in_review");
+        } catch (error) {
+          logger.warn({ error, issueId: issue.id }, "failed to release Light task resources for review");
+        }
+      }
       return review;
     },
 

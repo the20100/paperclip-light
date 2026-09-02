@@ -1113,6 +1113,9 @@ export async function startServer(): Promise<StartedServer> {
       .then((result) => {
         if (
           result.reservationsOrphaned > 0
+          || result.reservationsReleased > 0
+          || result.reservationsPromoted > 0
+          || result.reservationSweepFailures > 0
           || result.repositoryOperationsFailed > 0
           || result.runLogsDeleted > 0
           || result.runLogDeleteFailures > 0

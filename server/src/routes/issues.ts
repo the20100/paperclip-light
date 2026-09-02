@@ -10078,7 +10078,7 @@ export function issueRoutes(
     }
     const enteredResourceReleaseState =
       existing.status !== issue.status
-      && ["paused", "done", "failed", "cancelled"].includes(issue.status);
+      && ["in_review", "paused", "done", "failed", "cancelled"].includes(issue.status);
     if (enteredResourceReleaseState && issue.projectId) {
       const transitionedIssue = issue;
       try {

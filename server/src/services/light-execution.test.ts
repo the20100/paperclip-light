@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { normalizeReservedPath, reservationWaitCycle, reservedPathsOverlap } from "./light-execution.js";
+import {
+  isExpiredReservationReclaimable,
+  normalizeReservedPath,
+  reservationWaitCycle,
+  reservedPathsOverlap,
+} from "./light-execution.js";
 
 describe("Paperclip Light file reservations", () => {
   it("normalizes repository-relative paths deterministically", () => {
@@ -39,5 +44,33 @@ describe("Paperclip Light file reservations", () => {
         { id: "wait-b", issueId: "task-b", status: "waiting", blockedByReservationId: "lock-a" },
       ],
     })).toBeNull();
+  });
+
+  it("reclaims expired reservations once their owner has no live execution path", () => {
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: "run-1",
+      runStatus: "running",
+    })).toBe(false);
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: "run-1",
+      runStatus: "succeeded",
+    })).toBe(true);
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_review",
+      runId: "run-1",
+      runStatus: "running",
+    })).toBe(true);
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: null,
+      runStatus: null,
+    })).toBe(false);
+    expect(isExpiredReservationReclaimable({
+      issueStatus: "in_progress",
+      runId: "run-1",
+      runStatus: "failed",
+    })).toBe(false);
   });
 });

@@ -2406,6 +2406,8 @@ A reservation MUST NOT become writable by another task immediately after an unex
 
 This prevents a crashed agent's partial edit from becoming another agent's invisible starting point.
 
+The deterministic maintenance sweep MAY reclaim an expired orphan without human intervention when persisted state proves that the owner completed successfully, or when the task already entered `in_review` or a terminal lifecycle state whose transition captured any owned diff. A failed, interrupted, missing, or otherwise ambiguous non-terminal owner remains orphaned for checkpoint recovery or human force release. Reclaiming a safe orphan immediately runs FIFO waiter promotion; promotion skips tasks that still have unresolved first-class dependencies, and emits at most one resume wake for the promoted reservation request.
+
 ### 41.10 Shared Git metadata
 
 File reservations protect working-tree paths, but Git also has shared mutable metadata: the index, `HEAD`, refs, merge state, and lock files. All mutating Git operations MUST therefore go through a repository broker guarded by a short exclusive repository-operation lock.

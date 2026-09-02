@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, eq, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -10,6 +10,7 @@ import {
   fileReservations,
   heartbeatRuns,
   humanActions,
+  issueRelations,
   issues,
   projects,
   projectWorkspaces,
@@ -253,7 +254,7 @@ async function markExpiredReservationsOrphaned(
   workspaceScopeKey: string,
   now: Date,
 ) {
-  await tx
+  return tx
     .update(fileReservations)
     .set({ status: "orphaned", updatedAt: now })
     .where(and(
@@ -261,7 +262,18 @@ async function markExpiredReservationsOrphaned(
       eq(fileReservations.workspaceScopeKey, workspaceScopeKey),
       eq(fileReservations.status, "active"),
       lte(fileReservations.leaseExpiresAt, now),
-    ));
+    ))
+    .returning({ id: fileReservations.id });
+}
+
+export function isExpiredReservationReclaimable(input: {
+  issueStatus: string | null;
+  runId: string | null;
+  runStatus: string | null;
+}) {
+  if (["in_review", "done", "failed", "cancelled"].includes(input.issueStatus ?? "")) return true;
+  if (!input.runId || !input.runStatus) return false;
+  return input.runStatus === "succeeded";
 }
 
 function findConflicts(
@@ -375,6 +387,27 @@ async function promoteWaitingReservations(tx: any, input: {
         .where(eq(fileReservations.requestId, group[0]!.requestId));
       continue;
     }
+    const blockerIssueIds = await tx
+      .select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, input.companyId),
+        eq(issueRelations.relatedIssueId, issue.id),
+        eq(issueRelations.type, "blocks"),
+      ))
+      .then((rows: Array<{ id: string }>) => [...new Set(rows.map((row) => row.id))]);
+    const unresolvedBlocker = blockerIssueIds.length > 0
+      ? await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          inArray(issues.id, blockerIssueIds),
+          notInArray(issues.status, ["done", "failed", "cancelled"]),
+        ))
+        .limit(1)
+        .then((rows: Array<{ id: string }>) => rows[0] ?? null)
+      : null;
+    if (unresolvedBlocker) continue;
     const conflicts = findConflicts(group.map((row) => row.normalizedPath), active, group[0]!.issueId);
     if (conflicts.length > 0) continue;
 
@@ -393,13 +426,26 @@ async function promoteWaitingReservations(tx: any, input: {
     active.push(...rows);
     promoted.push(...rows);
 
-    if (issue.status === "paused" && issue.pauseReason === "file_reservation") {
+    const executionState = issue.executionState && typeof issue.executionState === "object" && !Array.isArray(issue.executionState)
+      ? issue.executionState as Record<string, unknown>
+      : {};
+    const lightState = executionState.light && typeof executionState.light === "object" && !Array.isArray(executionState.light)
+      ? executionState.light as Record<string, unknown>
+      : {};
+    const ownsResourceWait = lightState.reservationRequestId === group[0]!.requestId;
+    if (
+      (issue.status === "paused" && issue.pauseReason === "file_reservation")
+      || (issue.status === "blocked" && ownsResourceWait)
+    ) {
       await tx
         .update(issues)
         .set({
           status: "in_progress",
           pauseReason: null,
           pausedAt: null,
+          unblockDescriptor: null,
+          blockedTransitionAt: null,
+          blockedOwnerNotifiedAt: null,
           executionState: mergeExecutionState(issue.executionState, {
             reservationRequestId: group[0]!.requestId,
             filesReadyAt: input.now.toISOString(),
@@ -421,6 +467,52 @@ async function promoteWaitingReservations(tx: any, input: {
     }
   }
   return promoted;
+}
+
+async function reconcileExpiredReservations(tx: any, input: {
+  companyId: string;
+  workspaceScopeKey: string;
+  leaseSeconds: number;
+  now: Date;
+}) {
+  const orphaned = await markExpiredReservationsOrphaned(
+    tx,
+    input.companyId,
+    input.workspaceScopeKey,
+    input.now,
+  );
+  const staleOwners = await tx
+    .select({
+      id: fileReservations.id,
+      issueStatus: issues.status,
+      runId: fileReservations.runId,
+      runStatus: heartbeatRuns.status,
+    })
+    .from(fileReservations)
+    .leftJoin(issues, eq(issues.id, fileReservations.issueId))
+    .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, fileReservations.runId))
+    .where(and(
+      eq(fileReservations.companyId, input.companyId),
+      eq(fileReservations.workspaceScopeKey, input.workspaceScopeKey),
+      eq(fileReservations.status, "orphaned"),
+    ));
+  const reclaimableIds = staleOwners
+    .filter(isExpiredReservationReclaimable)
+    .map((row: { id: string }) => row.id);
+  const released = reclaimableIds.length > 0
+    ? await tx
+      .update(fileReservations)
+      .set({
+        status: "released",
+        releasedAt: input.now,
+        releaseReason: "expired_lease_reclaimed",
+        updatedAt: input.now,
+      })
+      .where(inArray(fileReservations.id, reclaimableIds))
+      .returning()
+    : [];
+  const promoted = await promoteWaitingReservations(tx, input);
+  return { orphaned, released, promoted };
 }
 
 export function lightFileReservationService(db: Db) {
@@ -459,7 +551,12 @@ export function lightFileReservationService(db: Db) {
       const result = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${scope.project.companyId}:${scope.workspaceScopeKey}`}, 0))`);
         const now = new Date();
-        await markExpiredReservationsOrphaned(tx, scope.project.companyId, scope.workspaceScopeKey, now);
+        await reconcileExpiredReservations(tx, {
+          companyId: scope.project.companyId,
+          workspaceScopeKey: scope.workspaceScopeKey,
+          leaseSeconds,
+          now,
+        });
         const active = await tx
           .select()
           .from(fileReservations)
@@ -529,11 +626,25 @@ export function lightFileReservationService(db: Db) {
         if (status === "active" && existing.length > 0) {
           await tx
             .update(fileReservations)
-            .set({ leaseExpiresAt, lastRenewedAt: now, updatedAt: now })
+            .set({
+              runId,
+              status: "active",
+              blockedByReservationId: null,
+              leaseExpiresAt,
+              lastRenewedAt: now,
+              releasedAt: null,
+              releaseReason: null,
+              updatedAt: now,
+            })
             .where(inArray(fileReservations.id, existing.map((row) => row.id)));
           for (const row of existing) {
+            row.runId = runId;
+            row.status = "active";
+            row.blockedByReservationId = null;
             row.leaseExpiresAt = leaseExpiresAt;
             row.lastRenewedAt = now;
+            row.releasedAt = null;
+            row.releaseReason = null;
             row.updatedAt = now;
           }
         }
@@ -671,6 +782,25 @@ export function lightFileReservationService(db: Db) {
           now,
         });
         return { released: released.map(toReservation), promoted: promoted.map(toReservation) };
+      });
+      return { companyId: scope.project.companyId, ...result };
+    },
+
+    reconcileExpired: async (projectId: string) => {
+      const scope = await resolveScope(db, projectId);
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`light-files:${scope.project.companyId}:${scope.workspaceScopeKey}`}, 0))`);
+        const reconciled = await reconcileExpiredReservations(tx, {
+          companyId: scope.project.companyId,
+          workspaceScopeKey: scope.workspaceScopeKey,
+          leaseSeconds: scope.policy.reservationLeaseSeconds,
+          now: new Date(),
+        });
+        return {
+          orphaned: reconciled.orphaned.length,
+          released: reconciled.released.map(toReservation),
+          promoted: reconciled.promoted.map(toReservation),
+        };
       });
       return { companyId: scope.project.companyId, ...result };
     },
