@@ -38,8 +38,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.70.0",
-    "@agentclientprotocol/codex-acp": "^1.6.2",
-    "@anthropic-ai/sdk": "0.121.0",
+    "@agentclientprotocol/codex-acp": "^1.7.0",
+    "@anthropic-ai/sdk": "0.122.0",
     "@clack/prompts": "^1.7.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -63,11 +63,11 @@
     "picocolors": "^1.1.1",
     "postgres": "^3.4.9",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },
   "engines": {
