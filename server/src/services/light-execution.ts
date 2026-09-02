@@ -276,6 +276,17 @@ export function isExpiredReservationReclaimable(input: {
   return input.runStatus === "succeeded";
 }
 
+export function shouldNormalizeReservationWait(input: {
+  issueStatus: string;
+  reservationRequestId: unknown;
+  currentRequestId: string;
+  hasUnresolvedBlocker: boolean;
+}) {
+  return input.issueStatus === "blocked"
+    && input.reservationRequestId === input.currentRequestId
+    && !input.hasUnresolvedBlocker;
+}
+
 function findConflicts(
   requestedPaths: readonly string[],
   activeRows: readonly FileReservationRow[],
@@ -387,6 +398,13 @@ async function promoteWaitingReservations(tx: any, input: {
         .where(eq(fileReservations.requestId, group[0]!.requestId));
       continue;
     }
+    const executionState = issue.executionState && typeof issue.executionState === "object" && !Array.isArray(issue.executionState)
+      ? issue.executionState as Record<string, unknown>
+      : {};
+    const lightState = executionState.light && typeof executionState.light === "object" && !Array.isArray(executionState.light)
+      ? executionState.light as Record<string, unknown>
+      : {};
+    const ownsResourceWait = lightState.reservationRequestId === group[0]!.requestId;
     const blockerIssueIds = await tx
       .select({ id: issueRelations.issueId })
       .from(issueRelations)
@@ -407,6 +425,28 @@ async function promoteWaitingReservations(tx: any, input: {
         .limit(1)
         .then((rows: Array<{ id: string }>) => rows[0] ?? null)
       : null;
+    if (shouldNormalizeReservationWait({
+      issueStatus: issue.status,
+      reservationRequestId: lightState.reservationRequestId,
+      currentRequestId: group[0]!.requestId,
+      hasUnresolvedBlocker: unresolvedBlocker !== null,
+    })) {
+      await tx
+        .update(issues)
+        .set({
+          status: "paused",
+          pauseReason: "file_reservation",
+          pausedAt: input.now,
+          unblockDescriptor: null,
+          blockedTransitionAt: null,
+          blockedOwnerNotifiedAt: null,
+          updatedAt: input.now,
+        })
+        .where(eq(issues.id, issue.id));
+      issue.status = "paused";
+      issue.pauseReason = "file_reservation";
+      issue.pausedAt = input.now;
+    }
     if (unresolvedBlocker) continue;
     const conflicts = findConflicts(group.map((row) => row.normalizedPath), active, group[0]!.issueId);
     if (conflicts.length > 0) continue;
@@ -426,13 +466,6 @@ async function promoteWaitingReservations(tx: any, input: {
     active.push(...rows);
     promoted.push(...rows);
 
-    const executionState = issue.executionState && typeof issue.executionState === "object" && !Array.isArray(issue.executionState)
-      ? issue.executionState as Record<string, unknown>
-      : {};
-    const lightState = executionState.light && typeof executionState.light === "object" && !Array.isArray(executionState.light)
-      ? executionState.light as Record<string, unknown>
-      : {};
-    const ownsResourceWait = lightState.reservationRequestId === group[0]!.requestId;
     if (
       (issue.status === "paused" && issue.pauseReason === "file_reservation")
       || (issue.status === "blocked" && ownsResourceWait)

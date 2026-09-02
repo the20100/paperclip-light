@@ -4,6 +4,7 @@ import {
   normalizeReservedPath,
   reservationWaitCycle,
   reservedPathsOverlap,
+  shouldNormalizeReservationWait,
 } from "./light-execution.js";
 
 describe("Paperclip Light file reservations", () => {
@@ -71,6 +72,27 @@ describe("Paperclip Light file reservations", () => {
       issueStatus: "in_progress",
       runId: "run-1",
       runStatus: "failed",
+    })).toBe(false);
+  });
+
+  it("normalizes legacy resource-only blocks without hiding logical dependencies", () => {
+    expect(shouldNormalizeReservationWait({
+      issueStatus: "blocked",
+      reservationRequestId: "request-1",
+      currentRequestId: "request-1",
+      hasUnresolvedBlocker: false,
+    })).toBe(true);
+    expect(shouldNormalizeReservationWait({
+      issueStatus: "blocked",
+      reservationRequestId: "request-1",
+      currentRequestId: "request-1",
+      hasUnresolvedBlocker: true,
+    })).toBe(false);
+    expect(shouldNormalizeReservationWait({
+      issueStatus: "blocked",
+      reservationRequestId: "older-request",
+      currentRequestId: "request-1",
+      hasUnresolvedBlocker: false,
     })).toBe(false);
   });
 });
