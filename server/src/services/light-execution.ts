@@ -478,6 +478,28 @@ async function promoteWaitingReservations(tx: any, input: {
       issue.pausedAt = input.now;
     }
     if (unresolvedBlocker) continue;
+    // A task can submit a second reservation request while an older request
+    // for the same task is still waiting. Once the older group is promoted,
+    // `findConflicts` deliberately ignores that task's own active files. The
+    // second group would then attempt to activate the same path and trip the
+    // partial unique index, turning a normal duplicate request into an HTTP
+    // 500. Reservation groups are atomic, so retire the superseded group and
+    // let the active request remain the task's authoritative lease.
+    const overlapsOwnActiveReservation = group.some((row) => active.some((current: FileReservationRow) =>
+      current.issueId === row.issueId && current.normalizedPath === row.normalizedPath,
+    ));
+    if (overlapsOwnActiveReservation) {
+      await tx
+        .update(fileReservations)
+        .set({
+          status: "cancelled",
+          releasedAt: input.now,
+          releaseReason: "superseded_by_active_reservation",
+          updatedAt: input.now,
+        })
+        .where(eq(fileReservations.requestId, group[0]!.requestId));
+      continue;
+    }
     const conflicts = findConflicts(group.map((row) => row.normalizedPath), active, group[0]!.issueId);
     if (conflicts.length > 0) continue;
 
