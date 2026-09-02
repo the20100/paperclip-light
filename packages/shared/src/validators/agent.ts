@@ -78,10 +78,14 @@ export const agentRuntimeConfigSchema = z.object({
     onUnavailable: z.enum(["fallback", "pause"]).optional().default("fallback"),
     fallbackModels: z.array(z.object({
       model: z.string().trim().min(1).max(512),
+      adapterType: z.string().trim().min(1).max(64).optional(),
       capabilities: z.array(z.enum([
         "code", "tools", "vision", "browser", "reasoning", "long_context",
       ])).max(6).optional().default([]),
     }).strict()).max(10).optional().default([]),
+    // Per-adapter adapterConfig overrides applied when Light routing runs this agent on an
+    // adapter other than its own (e.g. { codex_local: { command: "codex" } }).
+    adapterConfigs: z.record(z.string().trim().min(1).max(64), z.record(z.string(), z.unknown())).optional(),
   }).strict().optional(),
 }).catchall(z.unknown());
 

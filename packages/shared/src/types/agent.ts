@@ -40,8 +40,12 @@ export interface AgentRuntimeConfig extends Record<string, unknown> {
     onUnavailable?: "fallback" | "pause";
     fallbackModels?: Array<{
       model: string;
+      /** Adapter executing this fallback; defaults to the adapter parsed from `model` ("claude_local:claude-sonnet-5"), then inferred from the model id. */
+      adapterType?: string;
       capabilities?: Array<"code" | "tools" | "vision" | "browser" | "reasoning" | "long_context">;
     }>;
+    /** adapterConfig overrides keyed by adapter type, merged when a run is routed to another adapter. */
+    adapterConfigs?: Record<string, Record<string, unknown>>;
   };
 }
 

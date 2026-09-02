@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
@@ -138,6 +138,31 @@ const emptyOverlay: AgentConfigOverlay = {
 
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
+
+// Adapters whose models Paperclip Light can route to on a per-run basis. A routing entry is
+// written as "<adapterType>:<modelId>" (claude_local:claude-sonnet-5); without a prefix the
+// server infers Claude Code for claude-*/sonnet/opus/haiku ids and Codex for gpt-*/o* ids.
+const LIGHT_ROUTING_ADAPTER_TYPES = ["claude_local", "codex_local", "opencode_local"] as const;
+
+function useLightRoutingModelOptions(companyId: string | null, environmentId: string | null) {
+  const queries = useQueries({
+    queries: LIGHT_ROUTING_ADAPTER_TYPES.map((type) => ({
+      queryKey: companyId
+        ? queryKeys.agents.adapterModels(companyId, type, environmentId)
+        : ["agents", "none", "adapter-models", type],
+      queryFn: () => agentsApi.adapterModels(companyId!, type, { environmentId }),
+      enabled: Boolean(companyId),
+      staleTime: 60_000,
+    })),
+  });
+  return LIGHT_ROUTING_ADAPTER_TYPES.flatMap((type, index) => {
+    const adapterModels = queries[index]?.data ?? [];
+    return adapterModels.map((model) => ({
+      value: `${type}:${model.id}`,
+      label: `${adapterLabels[type] ?? type} · ${model.label}`,
+    }));
+  });
+}
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local";
@@ -729,6 +754,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const models = fetchedModels ?? externalModels ?? [];
+  const lightRoutingModelOptions = useLightRoutingModelOptions(selectedCompanyId ?? null, currentDefaultEnvironmentId || null);
   const runtimeConfigOverride = !isCreate ? asObject(overlay.runtime.runtimeConfig) : {};
   const effectiveAgentRuntimeConfig = !isCreate && Object.keys(runtimeConfigOverride).length > 0
     ? runtimeConfigOverride
@@ -1997,7 +2023,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         <option value="auto">Auto</option>
                       </select>
                     </Field>
-                    <Field label="Primary model" hint="Provider-native model id; compatible with OpenCode and local open-source providers.">
+                    <Field label="Primary model" hint="Model id, optionally prefixed by the adapter that runs it (claude_local:claude-sonnet-5, codex_local:gpt-5.6-sol). Without a prefix, claude-*/sonnet/opus/haiku ids run on Claude Code, gpt-*/o* ids on Codex, anything else on this agent's adapter.">
                       <input
                         className={inputClass}
                         list="paperclip-light-models"
@@ -2006,14 +2032,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         onChange={(event) => updateLightRouting({ primaryModel: event.target.value || undefined })}
                       />
                       <datalist id="paperclip-light-models">
-                        {models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+                        {lightRoutingModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                       </datalist>
                     </Field>
-                    <Field label="Fallback models" hint="Comma-separated provider model ids, tried in this order after technical failures.">
+                    <Field label="Fallback models" hint="Comma-separated model ids (same adapter prefix rules), tried in this order after technical failures. A fallback on another adapter is retried right away after a provider quota error instead of waiting for the quota reset.">
                       <input
                         className={inputClass}
+                        list="paperclip-light-models"
                         value={lightFallbackModels.join(", ")}
-                        placeholder="provider/model-small, provider/model-large"
+                        placeholder="claude_local:claude-sonnet-5, codex_local:gpt-5.6-terra"
                         onChange={(event) => updateLightRouting({
                           fallbackModels: parseCommaArgs(event.target.value).map((model) => ({
                             model,

@@ -5,6 +5,9 @@ export const executionProfileSchema = z.enum(["standard", "light"]);
 export const lightModelProfileSchema = z.object({
   provider: z.string().trim().min(1).max(128),
   modelId: z.string().trim().min(1).max(255),
+  // Paperclip adapter that executes this model (claude_local, codex_local, opencode_local, ...).
+  // Null keeps the agent's own adapter; Light routing switches the run's adapter when this differs.
+  adapterType: z.string().trim().min(1).max(64).nullable().optional(),
   displayName: z.string().trim().min(1).max(255),
   contextWindowTokens: z.number().int().min(1_000).max(20_000_000).nullable().default(null),
   maxOutputTokens: z.number().int().min(1).max(2_000_000).nullable().default(null),

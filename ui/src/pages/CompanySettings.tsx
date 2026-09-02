@@ -670,6 +670,7 @@ export function CompanySettings() {
                   modelRegistry: [...current.modelRegistry, {
                     provider: "openrouter",
                     modelId: "",
+                    adapterType: null,
                     displayName: "",
                     contextWindowTokens: null,
                     maxOutputTokens: null,
@@ -708,6 +709,7 @@ export function CompanySettings() {
                         <Field label="Provider"><input className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.provider} onChange={(event) => updateModel({ provider: event.target.value })} /></Field>
                         <Field label="Model ID"><input className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.modelId} onChange={(event) => updateModel({ modelId: event.target.value })} /></Field>
                         <Field label="Display name"><input className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.displayName} onChange={(event) => updateModel({ displayName: event.target.value })} /></Field>
+                        <Field label="Adapter" hint="Paperclip adapter that runs this model. Agent default keeps each agent's own adapter."><select className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.adapterType ?? ""} onChange={(event) => updateModel({ adapterType: event.target.value || null })}><option value="">Agent default</option><option value="claude_local">Claude Code</option><option value="codex_local">Codex</option><option value="opencode_local">OpenCode</option></select></Field>
                         <Field label="Context window"><input type="number" className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.contextWindowTokens ?? ""} onChange={(event) => updateModel({ contextWindowTokens: event.target.value ? Number(event.target.value) : null })} /></Field>
                         <Field label="Input $ / 1M"><input type="number" step="0.01" className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.inputPricePerMillion ?? ""} onChange={(event) => updateModel({ inputPricePerMillion: event.target.value ? Number(event.target.value) : null })} /></Field>
                         <Field label="Output $ / 1M"><input type="number" step="0.01" className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-sm" value={model.outputPricePerMillion ?? ""} onChange={(event) => updateModel({ outputPricePerMillion: event.target.value ? Number(event.target.value) : null })} /></Field>

@@ -95,7 +95,7 @@ export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, listAdapterModelProfiles, listServerAdapters, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -5580,6 +5580,8 @@ function readConfiguredModelFromAdapterConfig(
 
 type LightModelCandidate = {
   model: string;
+  adapterType: string | null;
+  adapterSource: "explicit" | "declared" | "registry" | "inferred" | "agent_default";
   provider?: string;
   capabilities: string[];
   qualityScore?: number;
@@ -5594,11 +5596,96 @@ type LightModelCandidate = {
   supportsSessionResume?: boolean;
 };
 
+// A Light model reference (`lightRouting.primaryModel`, `fallbackModels[].model`, registry ids)
+// may name the adapter that executes it: "claude_local:claude-sonnet-5", "codex_local:gpt-5.6-sol".
+// The prefix must be a registered adapter type (or end with "_local" when no registry is
+// available, e.g. in unit tests) so Bedrock ARNs such as "arn:aws:bedrock:..." stay intact.
+const LIGHT_MODEL_ADAPTER_PREFIX_RE = /^([a-z][a-z0-9_-]*):(.+)$/i;
+const CLAUDE_MODEL_ALIAS_RE = /^(sonnet|opus|haiku)(?:-(\d+(?:[.-]\d+)*))?$/i;
+const CLAUDE_MODEL_ID_RE = /^claude-/i;
+const CODEX_MODEL_ID_RE = /^(gpt-|o[1-9]|codex)/i;
+
+// adapterConfig keys that are adapter-agnostic Paperclip contracts and therefore survive a Light
+// adapter switch. Everything else (command, engine, mode, stateDir, variant, effort, toml, ...) is
+// adapter-specific and must come from `lightRouting.adapterConfigs[<adapterType>]`.
+export const LIGHT_ADAPTER_SWITCH_CARRIED_CONFIG_KEYS = [
+  "env",
+  "cwd",
+  "timeoutSec",
+  "graceSec",
+  "paperclipSkillSync",
+  "instructionsFilePath",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsBundleMode",
+  "promptTemplate",
+  "bootstrapPromptTemplate",
+  "filesystemScope",
+  "filesystemExtraPaths",
+  "networkScope",
+  "networkAllowlist",
+  "maxTurnsPerRun",
+] as const;
+
+export function parseLightModelAdapterPrefix(
+  reference: string,
+  knownAdapterTypes?: ReadonlySet<string> | null,
+): { model: string; adapterType: string | null } {
+  const trimmed = reference.trim();
+  const match = LIGHT_MODEL_ADAPTER_PREFIX_RE.exec(trimmed);
+  if (!match) return { model: trimmed, adapterType: null };
+  const prefix = match[1].toLowerCase();
+  const accepted = knownAdapterTypes ? knownAdapterTypes.has(prefix) : prefix.endsWith("_local");
+  if (!accepted) return { model: trimmed, adapterType: null };
+  return { model: match[2].trim(), adapterType: prefix };
+}
+
+export function inferLightAdapterTypeFromModel(model: string): string | null {
+  const trimmed = model.trim();
+  if (!trimmed) return null;
+  if (CLAUDE_MODEL_ID_RE.test(trimmed) || CLAUDE_MODEL_ALIAS_RE.test(trimmed)) return "claude_local";
+  if (CODEX_MODEL_ID_RE.test(trimmed)) return "codex_local";
+  return null;
+}
+
+// Claude Code accepts the bare aliases "sonnet" / "opus" / "haiku" and canonical ids such as
+// "claude-sonnet-5", but rejects "sonnet-5" ("There's an issue with the selected model"). Rewrite
+// the short form to the canonical id so a routing entry typed by hand still starts.
+export function normalizeLightModelForAdapter(model: string, adapterType: string | null | undefined): string {
+  const trimmed = model.trim();
+  if (adapterType !== "claude_local") return trimmed;
+  const alias = CLAUDE_MODEL_ALIAS_RE.exec(trimmed);
+  if (!alias) return trimmed;
+  const family = alias[1].toLowerCase();
+  const version = alias[2] ? alias[2].replace(/\./g, "-") : null;
+  return version ? `claude-${family}-${version}` : family;
+}
+
+export function buildLightAdapterSwitchConfig(input: {
+  baseConfig: Record<string, unknown>;
+  targetAdapterType: string;
+  agentRuntimeConfig?: unknown;
+}): Record<string, unknown> {
+  const carried: Record<string, unknown> = {};
+  for (const key of LIGHT_ADAPTER_SWITCH_CARRIED_CONFIG_KEYS) {
+    if (input.baseConfig[key] !== undefined) carried[key] = input.baseConfig[key];
+  }
+  const routing = parseObject(parseObject(input.agentRuntimeConfig).lightRouting);
+  const override = parseObject(parseObject(routing.adapterConfigs)[input.targetAdapterType]);
+  return { ...carried, ...override };
+}
+
+function knownLightAdapterTypes(): ReadonlySet<string> {
+  return new Set(listServerAdapters().map((adapter) => adapter.type));
+}
+
 export function resolveLightModelForRun(input: {
   agentRuntimeConfig: unknown;
   baseConfig: Record<string, unknown>;
   contextSnapshot: Record<string, unknown>;
   companyConfig?: LightCompanyConfig | null;
+  agentAdapterType?: string | null;
+  knownAdapterTypes?: ReadonlySet<string> | null;
   now?: Date;
 }) {
   const routing = parseObject(parseObject(input.agentRuntimeConfig).lightRouting);
@@ -5613,11 +5700,42 @@ export function resolveLightModelForRun(input: {
     [profile.modelId, profile],
     [`${profile.provider}/${profile.modelId}`, profile],
   ]));
-  const fromProfile = (model: string, declaredCapabilities: string[] = []): LightModelCandidate => {
-    const profile = registryByModel.get(model);
-    if (!profile) return { model, capabilities: declaredCapabilities };
+  const agentAdapterType = readNonEmptyString(input.agentAdapterType);
+  const fromReference = (
+    rawReference: string,
+    declaredCapabilities: string[] = [],
+    declaredAdapterType: string | null = null,
+    options: { pinToAgentAdapter?: boolean } = {},
+  ): LightModelCandidate => {
+    const prefixed = parseLightModelAdapterPrefix(rawReference, input.knownAdapterTypes);
+    const profile = registryByModel.get(prefixed.model) ?? null;
+    const modelId = profile?.modelId ?? prefixed.model;
+    const registryAdapterType = readNonEmptyString(profile?.adapterType);
+    let adapterType: string | null;
+    let adapterSource: LightModelCandidate["adapterSource"];
+    if (prefixed.adapterType) {
+      adapterType = prefixed.adapterType;
+      adapterSource = "explicit";
+    } else if (readNonEmptyString(declaredAdapterType)) {
+      adapterType = declaredAdapterType!.trim();
+      adapterSource = "declared";
+    } else if (registryAdapterType) {
+      adapterType = registryAdapterType;
+      adapterSource = "registry";
+    } else if (options.pinToAgentAdapter) {
+      adapterType = agentAdapterType;
+      adapterSource = "agent_default";
+    } else {
+      const inferred = inferLightAdapterTypeFromModel(modelId);
+      adapterType = inferred ?? agentAdapterType;
+      adapterSource = inferred ? "inferred" : "agent_default";
+    }
+    const model = normalizeLightModelForAdapter(modelId, adapterType);
+    if (!profile) return { model, adapterType, adapterSource, capabilities: declaredCapabilities };
     return {
-      model: profile.modelId,
+      model,
+      adapterType,
+      adapterSource,
       provider: profile.provider,
       capabilities: [...new Set([
         ...profile.capabilities,
@@ -5638,13 +5756,16 @@ export function resolveLightModelForRun(input: {
     };
   };
   const candidates: LightModelCandidate[] = [];
-  const primaryModel = readNonEmptyString(routing.primaryModel) ?? readConfiguredModelFromAdapterConfig(input.baseConfig);
+  const configuredPrimaryModel = readNonEmptyString(routing.primaryModel);
+  const primaryModel = configuredPrimaryModel ?? readConfiguredModelFromAdapterConfig(input.baseConfig);
   if (mode === "auto" && registry.length > 0) {
     for (const profile of registry) {
-      if (profile.enabled) candidates.push(fromProfile(`${profile.provider}/${profile.modelId}`));
+      if (profile.enabled) candidates.push(fromReference(`${profile.provider}/${profile.modelId}`));
     }
   } else if (primaryModel) {
-    candidates.push(fromProfile(primaryModel, requiredCapabilities));
+    // The adapter default model is by definition a model of the agent's own adapter: never infer
+    // another adapter from it.
+    candidates.push(fromReference(primaryModel, requiredCapabilities, null, { pinToAgentAdapter: !configuredPrimaryModel }));
   }
   if (fallbackEnabled && Array.isArray(routing.fallbackModels)) {
     for (const raw of routing.fallbackModels) {
@@ -5654,8 +5775,11 @@ export function resolveLightModelForRun(input: {
       const capabilities = Array.isArray(candidate.capabilities)
         ? candidate.capabilities.filter((value): value is string => typeof value === "string")
         : [];
-      const resolved = fromProfile(model, capabilities);
-      if (!candidates.some((existing) => existing.model === resolved.model && existing.provider === resolved.provider)) {
+      const resolved = fromReference(model, capabilities, readNonEmptyString(candidate.adapterType));
+      if (!candidates.some((existing) =>
+        existing.model === resolved.model
+        && existing.provider === resolved.provider
+        && existing.adapterType === resolved.adapterType)) {
         candidates.push(resolved);
       }
     }
@@ -5693,13 +5817,18 @@ export function resolveLightModelForRun(input: {
   const selectedIndex = Math.min(Math.max(0, rawIndex), Math.max(0, eligible.length - 1));
   const selectedEntry = eligible[selectedIndex] ?? null;
   const selected = selectedEntry?.candidate ?? null;
+  const selectedAdapterType = selected?.adapterType ?? null;
   return {
     config: selected ? { ...input.baseConfig, model: selected.model } : input.baseConfig,
     shouldPause: !selected && onUnavailable === "pause",
+    selectedAdapterType,
     metadata: {
       mode,
       selectedModel: selected?.model ?? readConfiguredModelFromAdapterConfig(input.baseConfig),
       selectedProvider: selected?.provider ?? null,
+      selectedAdapterType,
+      selectedAdapterSource: selected?.adapterSource ?? null,
+      adapterSwitched: Boolean(selectedAdapterType && agentAdapterType && selectedAdapterType !== agentAdapterType),
       selectedIndex,
       candidateCount: eligible.length,
       inspectedCandidateCount: inspected.length,
@@ -5711,6 +5840,8 @@ export function resolveLightModelForRun(input: {
       inspected: inspected.map((entry) => ({
         model: entry.candidate.model,
         provider: entry.candidate.provider ?? null,
+        adapterType: entry.candidate.adapterType,
+        adapterSource: entry.candidate.adapterSource,
         eligible: entry.eligible,
         reasons: entry.reasons,
         score: Math.round(entry.score * 100) / 100,
@@ -5718,6 +5849,91 @@ export function resolveLightModelForRun(input: {
         healthIsStale: entry.healthIsStale,
       })),
     },
+  };
+}
+
+export type LightAdapterSwitch = {
+  fromAdapterType: string;
+  adapterType: string;
+  model: string | null;
+  adapterConfig: Record<string, unknown>;
+};
+
+// Decides, before any adapter-specific work starts, whether Light routing runs this heartbeat on
+// another adapter than the agent's own (e.g. a Codex agent whose selected fallback is a Claude
+// model). The switch is per run only: the agent row is never modified.
+export function resolveLightAdapterSwitchForRun(input: {
+  agentAdapterType: string;
+  agentAdapterConfig: unknown;
+  agentRuntimeConfig: unknown;
+  companyConfig?: LightCompanyConfig | null;
+  contextSnapshot: Record<string, unknown>;
+  knownAdapterTypes?: ReadonlySet<string> | null;
+  now?: Date;
+}): { routing: ReturnType<typeof resolveLightModelForRun>["metadata"]; switch: LightAdapterSwitch | null } {
+  const baseConfig = parseObject(input.agentAdapterConfig);
+  const routing = resolveLightModelForRun({
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    baseConfig,
+    contextSnapshot: input.contextSnapshot,
+    companyConfig: input.companyConfig ?? null,
+    agentAdapterType: input.agentAdapterType,
+    knownAdapterTypes: input.knownAdapterTypes ?? null,
+    now: input.now,
+  });
+  const target = routing.selectedAdapterType;
+  if (!target || target === input.agentAdapterType) return { routing: routing.metadata, switch: null };
+  if (input.knownAdapterTypes && !input.knownAdapterTypes.has(target)) return { routing: routing.metadata, switch: null };
+  return {
+    routing: routing.metadata,
+    switch: {
+      fromAdapterType: input.agentAdapterType,
+      adapterType: target,
+      model: readNonEmptyString(routing.config.model),
+      adapterConfig: buildLightAdapterSwitchConfig({
+        baseConfig,
+        targetAdapterType: target,
+        agentRuntimeConfig: input.agentRuntimeConfig,
+      }),
+    },
+  };
+}
+
+// Compares the adapter of the failed attempt with the adapter of the next Light fallback. A
+// provider quota only applies to one provider, so a retry that moves to another adapter must not
+// wait for the exhausted provider's reset time.
+export function resolveLightRetryAdapterSwitch(input: {
+  agentAdapterType: string;
+  agentAdapterConfig: unknown;
+  agentRuntimeConfig: unknown;
+  companyConfig?: LightCompanyConfig | null;
+  contextSnapshot: Record<string, unknown>;
+  nextAttempt: number;
+  knownAdapterTypes?: ReadonlySet<string> | null;
+  now?: Date;
+}): { fromAdapterType: string; toAdapterType: string; toModel: string | null; lightFallbackIndex: number; switches: boolean } | null {
+  const routing = parseObject(parseObject(input.agentRuntimeConfig).lightRouting);
+  const fallbackCount = Array.isArray(routing.fallbackModels) ? routing.fallbackModels.length : 0;
+  if (routing.fallbackEnabled === false || fallbackCount === 0) return null;
+  const lightFallbackIndex = Math.min(Math.max(1, Math.floor(input.nextAttempt)), fallbackCount);
+  const shared = {
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    baseConfig: parseObject(input.agentAdapterConfig),
+    companyConfig: input.companyConfig ?? null,
+    agentAdapterType: input.agentAdapterType,
+    knownAdapterTypes: input.knownAdapterTypes ?? null,
+    now: input.now,
+  };
+  const current = resolveLightModelForRun({ ...shared, contextSnapshot: input.contextSnapshot });
+  const next = resolveLightModelForRun({ ...shared, contextSnapshot: { ...input.contextSnapshot, lightFallbackIndex } });
+  const fromAdapterType = current.selectedAdapterType ?? input.agentAdapterType;
+  const toAdapterType = next.selectedAdapterType ?? input.agentAdapterType;
+  return {
+    fromAdapterType,
+    toAdapterType,
+    toModel: readNonEmptyString(next.config.model),
+    lightFallbackIndex,
+    switches: fromAdapterType !== toAdapterType,
   };
 }
 
@@ -12036,14 +12252,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // A provider quota (e.g. Codex "You've hit your usage limit ... try again at <date>") only
+    // applies to that provider. When the next Light fallback runs on another adapter, retry on the
+    // normal bounded backoff instead of waiting for the exhausted provider's reset time.
+    let lightRetryAdapterSwitch: ReturnType<typeof resolveLightRetryAdapterSwitch> = null;
+    if (transientRecovery?.errorFamily === "provider_quota" && retryLightRouting.fallbackEnabled !== false) {
+      const retryCompanyExecution = await db
+        .select({ executionProfile: companies.executionProfile, lightConfig: companies.lightConfig })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .then((rows) => rows[0] ?? null);
+      if (usesLightExecutionProfile(retryCompanyExecution?.executionProfile ?? null, agent.runtimeConfig)) {
+        const parsedRetryLightConfig = lightCompanyConfigSchema.safeParse(retryCompanyExecution?.lightConfig ?? {});
+        lightRetryAdapterSwitch = resolveLightRetryAdapterSwitch({
+          agentAdapterType: agent.adapterType,
+          agentAdapterConfig: agent.adapterConfig,
+          agentRuntimeConfig: agent.runtimeConfig,
+          companyConfig: parsedRetryLightConfig.success ? parsedRetryLightConfig.data : null,
+          contextSnapshot,
+          nextAttempt,
+          knownAdapterTypes: knownLightAdapterTypes(),
+        });
+      }
+    }
+    const skipProviderQuotaDeferral = Boolean(lightRetryAdapterSwitch?.switches);
     const schedule =
-      transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
+      transientRetryNotBefore && !skipProviderQuotaDeferral && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
             ...baseSchedule,
             dueAt: transientRetryNotBefore,
             delayMs: Math.max(0, transientRetryNotBefore.getTime() - now.getTime()),
           }
         : baseSchedule;
+    if (skipProviderQuotaDeferral && lightRetryAdapterSwitch) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: `Provider quota exhausted on adapter "${lightRetryAdapterSwitch.fromAdapterType}"; retrying on adapter "${lightRetryAdapterSwitch.toAdapterType}" (model "${lightRetryAdapterSwitch.toModel ?? "adapter default"}") without waiting for the quota reset`,
+        payload: {
+          retryReason,
+          providerQuotaRetryNotBefore: transientRetryNotBefore?.toISOString() ?? null,
+          fromAdapterType: lightRetryAdapterSwitch.fromAdapterType,
+          toAdapterType: lightRetryAdapterSwitch.toAdapterType,
+          toModel: lightRetryAdapterSwitch.toModel,
+          lightFallbackIndex: lightRetryAdapterSwitch.lightFallbackIndex,
+          scheduledRetryAt: schedule.dueAt.toISOString(),
+        },
+      });
+    }
 
     const requiresIssueGate =
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
@@ -12126,6 +12383,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
         : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      ...(lightRetryAdapterSwitch?.switches ? { lightFallbackAdapterType: lightRetryAdapterSwitch.toAdapterType } : {}),
       ...(lightFallbackIndex > 0 ? { lightFallbackIndex } : {}),
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
@@ -12359,6 +12617,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
               : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+            ...(lightRetryAdapterSwitch?.switches ? { lightFallbackAdapterType: lightRetryAdapterSwitch.toAdapterType } : {}),
             ...(lightFallbackIndex > 0 ? { lightFallbackIndex } : {}),
           }, "normal_model"),
           status: "queued",
@@ -12580,6 +12839,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(lightRetryAdapterSwitch?.switches ? { lightFallbackAdapterType: lightRetryAdapterSwitch.toAdapterType } : {}),
       },
     });
 
@@ -15098,7 +15358,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runScratch: HeartbeatRunScratch | null = null;
 
     try {
-    const agent = await getAgent(run.agentId);
+    let agent = await getAgent(run.agentId);
     if (!agent) {
       await setRunStatus(runId, "failed", {
         error: "Agent not found",
@@ -15125,6 +15385,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const lightExecutionEnabled = configuredAgentExecutionMode === "light"
       || (configuredAgentExecutionMode !== "standard" && companyExecutionSettings?.executionProfile === "light");
     const parsedCompanyLightConfig = lightCompanyConfigSchema.safeParse(companyExecutionSettings?.lightConfig ?? {});
+    // Light routing may execute this run on another adapter than the agent's own (Claude <-> Codex
+    // <-> OpenCode). Decide it here, before any adapter-specific work (session codec, task session,
+    // model profiles, config resolution) reads `agent.adapterType`.
+    const lightAdapterSwitch = lightExecutionEnabled && parsedCompanyLightConfig.success
+      ? resolveLightAdapterSwitchForRun({
+          agentAdapterType: agent.adapterType,
+          agentAdapterConfig: agent.adapterConfig,
+          agentRuntimeConfig: agent.runtimeConfig,
+          companyConfig: parsedCompanyLightConfig.data,
+          contextSnapshot: context,
+          knownAdapterTypes: knownLightAdapterTypes(),
+        })
+      : null;
+    if (lightAdapterSwitch?.switch) {
+      logger.info(
+        {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          fromAdapterType: lightAdapterSwitch.switch.fromAdapterType,
+          adapterType: lightAdapterSwitch.switch.adapterType,
+          model: lightAdapterSwitch.switch.model,
+        },
+        "Paperclip Light routed run to another adapter",
+      );
+      agent = {
+        ...agent,
+        adapterType: lightAdapterSwitch.switch.adapterType,
+        adapterConfig: lightAdapterSwitch.switch.adapterConfig,
+      };
+    } else if (lightAdapterSwitch?.routing.adapterSwitched) {
+      logger.warn(
+        {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          selectedAdapterType: lightAdapterSwitch.routing.selectedAdapterType,
+          agentAdapterType: agent.adapterType,
+        },
+        "Paperclip Light selected an adapter that is not registered; keeping the agent adapter",
+      );
+    }
     const taskKey = lightExecutionEnabled
       && parsedCompanyLightConfig.success
       && !parsedCompanyLightConfig.data.taskSessionIsolation
@@ -15736,9 +16038,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         baseConfig: mergedConfig,
         contextSnapshot: context,
         companyConfig: companyLightConfig,
+        agentAdapterType: agent.adapterType,
+        knownAdapterTypes: knownLightAdapterTypes(),
       });
       mergedConfig = lightRouting.config;
-      context.paperclipLightRouting = lightRouting.metadata;
+      context.paperclipLightRouting = {
+        ...lightRouting.metadata,
+        adapterType: agent.adapterType,
+        ...(lightAdapterSwitch?.switch ? { adapterSwitchedFrom: lightAdapterSwitch.switch.fromAdapterType } : {}),
+      };
       if (lightRouting.shouldPause && issueId) {
         await db.update(issues).set({
           status: "paused",
@@ -16693,6 +17001,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             taskKey
               ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
               : `Skipping saved session resume because ${sessionResetReason}.`,
+          ]
+        : []),
+      ...(lightAdapterSwitch?.switch
+        ? [
+            `Paperclip Light routed this run to adapter "${lightAdapterSwitch.switch.adapterType}" (model "${lightAdapterSwitch.switch.model ?? "adapter default"}") instead of the agent's configured adapter "${lightAdapterSwitch.switch.fromAdapterType}".`,
           ]
         : []),
     ];
