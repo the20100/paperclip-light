@@ -6,12 +6,14 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-    # Each dependency update gets its own pull request, including major
-    # version bumps. A grouped major PR cannot merge when one member has
-    # a blocked upgrade, so it hides the other ready majors. Separate PRs
-    # let each major land on its own. The limit holds the initial burst
-    # of pending majors plus the regular minor and patch updates.
-    open-pull-requests-limit: 20
+    # Keep major upgrades separate for deliberate review. Combine routine
+    # minor and patch updates so one weekly refresh uses one CI run.
+    open-pull-requests-limit: 5
+    groups:
+      routine-updates:
+        update-types:
+          - "minor"
+          - "patch"
     labels:
       - "dependencies"
     # Dependabot's npm parser reads only dependencies, devDependencies, and
