@@ -828,6 +828,11 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   "issue_recovery_action_restored",
+  // A board status transition is new work. In particular, done -> todo can
+  // race the run that just closed the issue: that run has updated the issue
+  // but may still be finishing its adapter lifecycle. Coalescing the wake into
+  // that dying run loses the reopen, so preserve it as the next issue run.
+  "issue_status_changed",
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",

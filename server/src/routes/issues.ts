@@ -10612,17 +10612,11 @@ export function issueRoutes(
 
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
-    const statusChangedFromBacklog =
-      existing.status === "backlog" &&
-      issue.status !== "backlog" &&
-      req.body.status !== undefined;
-    const statusChangedFromClosedToTodo =
-      isClosedIssueStatus(existing.status) &&
-      issue.status === "todo" &&
-      req.body.status !== undefined;
-    const userResumedFromReviewToTodo =
-      actor.actorType === "user" &&
-      existing.status === "in_review" &&
+    // Any assigned task that enters todo is actionable, regardless of where
+    // it came from. Do not wait for the timer sweep: a board move is an
+    // explicit request to put the assignee back to work.
+    const statusChangedToTodo =
+      existing.status !== "todo" &&
       issue.status === "todo" &&
       req.body.status !== undefined;
     const previousExecutionState = parseIssueExecutionState(existing.executionState);
@@ -10738,10 +10732,7 @@ export function issueRoutes(
       if (
         !assigneeChanged &&
         (
-          statusChangedFromBacklog ||
-          statusChangedFromBlockedToTodo ||
-          statusChangedFromClosedToTodo ||
-          userResumedFromReviewToTodo
+          statusChangedToTodo
         ) &&
         issue.assigneeAgentId
       ) {

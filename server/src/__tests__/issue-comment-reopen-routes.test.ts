@@ -167,6 +167,13 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueTreeControlService: () => mockIssueTreeControlService,
+  lightFileReservationService: () => ({
+    list: async () => ({ rows: [] }),
+    releaseForIssueLifecycle: async () => undefined,
+  }),
+  lightTaskCheckpointService: () => ({
+    capture: async () => undefined,
+  }),
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
@@ -1767,7 +1774,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("does not wake the assignee when the assignee agent moves its own review back to todo", async () => {
+  it("wakes the assignee when the assignee agent moves its own review back to todo", async () => {
     const issue = makeIssue("in_review");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -1781,7 +1788,36 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ status: "todo" });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({
+          issueId: "11111111-1111-4111-8111-111111111111",
+          mutation: "update",
+        }),
+      }),
+    ));
+  });
+
+  it("wakes the assignee when an assigned in-progress task moves to todo", async () => {
+    const issue = makeIssue("in_progress");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_status_changed" }),
+    ));
   });
 
   it("does not enqueue a resume wake when an unassigned review moves back to todo", async () => {
