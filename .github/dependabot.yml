@@ -8,7 +8,8 @@ updates:
       time: "06:00"
     # Keep major upgrades separate for deliberate review. Combine routine
     # minor and patch updates so one weekly refresh uses one CI run.
-    open-pull-requests-limit: 5
+    # paperclip-light pause: set back to 5 to resume npm version updates.
+    open-pull-requests-limit: 0
     groups:
       routine-updates:
         update-types:
@@ -38,4 +39,5 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-    open-pull-requests-limit: 5
+    # paperclip-light pause: set back to 5 to resume GitHub Actions updates.
+    open-pull-requests-limit: 0
