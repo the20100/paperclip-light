@@ -1042,7 +1042,10 @@ export function NewIssueDialog() {
 
   function handleSubmit() {
     const currentTitle = titleRef.current.trim();
-    const currentDescription = descriptionRef.current.trim();
+    // MDXEditor can still hold its most recent edit when the user presses
+    // Create immediately after typing or pasting. Read its canonical value so
+    // that a task never loses that final description update in the POST body.
+    const currentDescription = (descriptionEditorRef.current?.getMarkdown() ?? descriptionRef.current).trim();
     if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
     const effectiveLane = assigneeSupportsCheapLane
       ? assigneeModelLane

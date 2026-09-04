@@ -106,6 +106,37 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(container.textContent).not.toContain("Ship the widget");
   });
 
+  it("shows direct image attachments as reference images and opens the selected image", () => {
+    const onPreviewAttachment = vi.fn();
+    render(makeBrief({
+      attachments: [{
+        id: "attachment-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        issueCommentId: null,
+        assetId: "asset-1",
+        provider: "local_disk",
+        objectKey: "issues/attachment-1.png",
+        contentType: "image/png",
+        byteSize: 42,
+        sha256: "sha-1",
+        originalFilename: "reference.png",
+        createdByAgentId: null,
+        createdByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        contentPath: "/api/attachments/attachment-1/content",
+      }],
+      onPreviewAttachment,
+    }));
+
+    const gallery = container.querySelector('[data-testid="task-chat-reference-images"]');
+    expect(gallery?.textContent).toContain("Images de référence");
+    expect(gallery?.querySelector<HTMLImageElement>("img")?.src).toContain("/api/attachments/attachment-1/content");
+    click(gallery?.querySelector("button") ?? null);
+    expect(onPreviewAttachment).toHaveBeenCalledWith(expect.objectContaining({ id: "attachment-1" }));
+  });
+
   it("swaps to the InlineEditor on pencil click and returns to the bubble on Escape", () => {
     render(makeBrief());
     click(container.querySelector('[data-testid="task-chat-description-edit"]'));

@@ -69,6 +69,8 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /** Extra class applied to issue hover previews opened from this markdown surface. */
+  issueQuicklookClassName?: string;
   /**
    * Linkify bare case identifiers (`PAP-C7`) to the case detail page. Off by
    * default; enabled on surfaces behind the experimental Cases flag (PAP-12969).
@@ -91,6 +93,11 @@ interface MarkdownBodyProps {
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
   /**
+   * Optional, surface-specific href normalizer. It runs after markdown URL
+   * sanitization and before Paperclip's internal-link handling.
+   */
+  resolveLinkHref?: (href: string) => string;
+  /**
    * Resolver that decides which inline-code workspace file paths may be linked
    * to the issue file viewer. Omitting it (or returning null) leaves every
    * path-shaped code span as ordinary inline code — the fail-closed default.
@@ -105,9 +112,11 @@ let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = nul
 
 function MarkdownIssueLink({
   issuePathId,
+  issueQuicklookClassName,
   children,
 }: {
   issuePathId: string;
+  issueQuicklookClassName?: string;
   children: ReactNode;
 }) {
   const { data } = useQuery({
@@ -125,6 +134,7 @@ function MarkdownIssueLink({
     <Link
       to={`/issues/${identifier}`}
       data-mention-kind="issue"
+      issueQuicklookClassName={issueQuicklookClassName}
       // Boxless inline mention: the unified status glyph + a regular-weight
       // underlined link, optically centered with the body text.
       className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
@@ -712,6 +722,7 @@ function MarkdownBodyImpl({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  issueQuicklookClassName,
   linkCaseReferences = false,
   enableWikiLinks = false,
   wikiLinkRoot,
@@ -719,6 +730,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   onImageClick,
+  resolveLinkHref,
   resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
@@ -814,7 +826,8 @@ function MarkdownBodyImpl({
       </code>
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
-      const workspaceFileRef = parseWorkspaceFileHref(href);
+      const resolvedHref = href && resolveLinkHref ? resolveLinkHref(href) : href;
+      const workspaceFileRef = parseWorkspaceFileHref(resolvedHref);
       if (workspaceFileRef) {
         return (
           <WorkspaceFileLink
@@ -827,10 +840,10 @@ function MarkdownBodyImpl({
 
       const dataProps = anchorProps as Record<string, unknown>;
       const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
-      if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {
+      if (isWikiLink && resolvedHref && !/^[a-z][a-z\d+.-]*:/i.test(resolvedHref) && !resolvedHref.startsWith("//")) {
         return (
           <Link
-            to={href}
+            to={resolvedHref}
             {...anchorProps}
             rel="noreferrer"
             style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
@@ -840,21 +853,21 @@ function MarkdownBodyImpl({
         );
       }
 
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(resolvedHref) : null;
       if (issueRef) {
         return (
-          <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
+          <MarkdownIssueLink issuePathId={issueRef.issuePathId} issueQuicklookClassName={issueQuicklookClassName}>
             {linkChildren}
           </MarkdownIssueLink>
         );
       }
 
-      const caseIdentifier = linkCaseReferences ? caseIdentifierFromHref(href) : null;
+      const caseIdentifier = linkCaseReferences ? caseIdentifierFromHref(resolvedHref) : null;
       if (caseIdentifier) {
         return <MarkdownCaseLink identifier={caseIdentifier}>{linkChildren}</MarkdownCaseLink>;
       }
 
-      const parsed = href ? parseMentionChipHref(href) : null;
+      const parsed = resolvedHref ? parseMentionChipHref(resolvedHref) : null;
       if (parsed) {
         const targetHref = parsed.kind === "project"
           ? `/projects/${parsed.projectId}`
@@ -882,19 +895,19 @@ function MarkdownBodyImpl({
           </a>
         );
       }
-      const externalReference = href && externalReferenceLookup
-        ? externalReferenceLookup[normalizeExternalObjectHref(href) ?? ""] ?? null
+      const externalReference = resolvedHref && externalReferenceLookup
+        ? externalReferenceLookup[normalizeExternalObjectHref(resolvedHref) ?? ""] ?? null
         : null;
-      if (externalReference && href) {
+      if (externalReference && resolvedHref) {
         return (
-          <MarkdownExternalLink href={href} reference={externalReference}>
+          <MarkdownExternalLink href={resolvedHref} reference={externalReference}>
             {linkChildren}
           </MarkdownExternalLink>
         );
       }
 
-      const isGitHubLink = isGitHubUrl(href);
-      const isExternal = isExternalHttpUrl(href);
+      const isGitHubLink = isGitHubUrl(resolvedHref);
+      const isExternal = isExternalHttpUrl(resolvedHref);
       const leadingIcon = isGitHubLink ? (
         <GithubIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
@@ -903,7 +916,7 @@ function MarkdownBodyImpl({
       ) : null;
       return (
         <a
-          href={href}
+          href={resolvedHref}
           {...(isExternal
             ? { target: "_blank", rel: "noopener noreferrer" }
             : { rel: "noreferrer" })}
@@ -930,7 +943,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
+  }, [theme, linkIssueReferences, linkCaseReferences, issueQuicklookClassName, externalReferenceLookup, resolveImageSrc, onImageClick, resolveLinkHref]);
 
   return (
     <div

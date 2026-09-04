@@ -35,7 +35,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
-| Communication | Tasks + comments only (no separate chat system) |
+| Communication | Tasks + comments remain the persistence contract. The optional, experimental instance-admin “Architecte de civilisation” overlay presents those hidden internal issues/comments as conversations; it is not a separate chat data model. Its local CLI harness may operate Paperclip and the host only with explicit instance-admin access. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
 | Recovery | Liveness/watchdog recovery preserves explicit ownership: retry lost execution continuity where safe, otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |

@@ -62,6 +62,7 @@ type CompanyLinkProps = React.ComponentProps<typeof RouterDom.Link> & {
   issuePrefetch?: Issue | null;
   issueQuicklookSide?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookSide"];
   issueQuicklookAlign?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookAlign"];
+  issueQuicklookClassName?: React.ComponentProps<typeof IssueLinkQuicklook>["issueQuicklookClassName"];
 };
 
 export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
@@ -71,6 +72,7 @@ export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
     issuePrefetch = null,
     issueQuicklookSide,
     issueQuicklookAlign,
+    issueQuicklookClassName,
     ...props
   }, ref) {
     const companyPrefix = useActiveCompanyPrefix();
@@ -87,6 +89,7 @@ export const Link = React.forwardRef<HTMLAnchorElement, CompanyLinkProps>(
           issuePrefetch={issuePrefetch}
           issueQuicklookSide={issueQuicklookSide}
           issueQuicklookAlign={issueQuicklookAlign}
+          issueQuicklookClassName={issueQuicklookClassName}
           {...props}
         />
       );

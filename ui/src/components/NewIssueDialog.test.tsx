@@ -75,6 +75,9 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 const mockMissingUserSecretsBannerRender = vi.hoisted(() => vi.fn());
+const markdownEditorState = vi.hoisted(() => ({
+  deferParentChange: false,
+}));
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
@@ -161,17 +164,29 @@ vi.mock("./MarkdownEditor", async () => {
   const React = await import("react");
   return {
     MarkdownEditor: React.forwardRef<
-      { focus: () => void },
+      { focus: () => void; getMarkdown: () => string },
       { value: string; onChange?: (value: string) => void; placeholder?: string }
     >(function MarkdownEditorMock({ value, onChange, placeholder }, ref) {
+      const [draft, setDraft] = React.useState(value);
+      React.useEffect(() => {
+        setDraft(value);
+      }, [value]);
       React.useImperativeHandle(ref, () => ({
         focus: () => undefined,
-      }));
+        getMarkdown: () => draft,
+      }), [draft]);
       return (
         <textarea
           aria-label={placeholder ?? "Description"}
-          value={value}
-          onChange={(event) => onChange?.(event.target.value)}
+          value={draft}
+          onChange={(event) => {
+            const next = event.target.value;
+            setDraft(next);
+            if (!markdownEditorState.deferParentChange) onChange?.(next);
+          }}
+          onBlur={() => {
+            if (markdownEditorState.deferParentChange) onChange?.(draft);
+          }}
         />
       );
     }),
@@ -358,6 +373,7 @@ describe("NewIssueDialog", () => {
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockMissingUserSecretsBannerRender.mockReset();
+    markdownEditorState.deferParentChange = false;
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
@@ -830,6 +846,43 @@ describe("NewIssueDialog", () => {
         title: "Typed issue",
         description: "Typed description",
         workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("submits a description still pending in the rich editor", async () => {
+    markdownEditorState.deferParentChange = true;
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, "Task with an immediate description");
+    await typeTextareaValue(descriptionInput!, "This text must be included even before the editor blurs.");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Task with an immediate description",
+        description: "This text must be included even before the editor blurs.",
       }),
     );
 

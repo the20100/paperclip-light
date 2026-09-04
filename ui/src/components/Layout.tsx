@@ -47,6 +47,7 @@ import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
+import { CivilizationChatLauncher } from "./CivilizationChatLauncher";
 
 function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
   return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
@@ -714,6 +715,7 @@ export function Layout() {
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
+      <CivilizationChatLauncher />
       </div>
     </GeneralSettingsProvider>
   );

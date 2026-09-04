@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pencil } from "lucide-react";
+import { Images, Pencil } from "lucide-react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
@@ -7,6 +8,7 @@ import { MarkdownBody, type MarkdownExternalReferenceMap } from "@/components/Ma
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { isImageAttachment } from "@/lib/issue-attachments";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
 
 /**
@@ -30,6 +32,9 @@ export interface TaskChatIssueBrief {
   externalReferences?: MarkdownExternalReferenceMap;
   imageUploadHandler?: (file: File) => Promise<string>;
   onDropFile?: (file: File) => Promise<void>;
+  /** Direct task attachments shown beneath the request as visual references. */
+  attachments?: IssueAttachment[];
+  onPreviewAttachment?: (attachment: IssueAttachment) => void;
 }
 
 interface TaskChatDescriptionBubbleProps {
@@ -45,6 +50,45 @@ function initialsForName(name: string) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
+}
+
+function TaskChatReferenceImages({ brief }: { brief: TaskChatIssueBrief }) {
+  const images = brief.attachments?.filter(isImageAttachment) ?? [];
+  if (images.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-2" data-testid="task-chat-reference-images">
+      <div className="flex items-center gap-1.5 text-(length:--text-micro) font-medium text-muted-foreground">
+        <Images className="h-3.5 w-3.5" aria-hidden />
+        <span>Images de référence</span>
+        <span aria-label={`${images.length} image${images.length === 1 ? "" : "s"}`}>{images.length}</span>
+      </div>
+      <div className={cn("grid gap-2", images.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
+        {images.map((attachment) => {
+          const filename = attachment.originalFilename ?? "Image jointe";
+          return (
+            <button
+              key={attachment.id}
+              type="button"
+              className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-muted text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => brief.onPreviewAttachment?.(attachment)}
+              aria-label={`Ouvrir ${filename}`}
+            >
+              <img
+                src={attachment.contentPath}
+                alt={filename}
+                className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                loading="lazy"
+              />
+              <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-2 py-1 text-(length:--text-micro) text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                {filename}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -159,6 +203,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
               {brief.description}
             </MarkdownBody>
           </FoldCurtain>
+          <TaskChatReferenceImages brief={brief} />
         </div>
         <button
           type="button"

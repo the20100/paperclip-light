@@ -224,6 +224,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     issuePrefetch?: Issue | null;
     issueQuicklookSide?: React.ComponentProps<typeof PopoverContent>["side"];
     issueQuicklookAlign?: React.ComponentProps<typeof PopoverContent>["align"];
+    /** Extra stacking treatment for a surface that owns the quicklook. */
+    issueQuicklookClassName?: string;
   }
 >(function IssueLinkQuicklookImpl(
   {
@@ -236,6 +238,7 @@ export const IssueLinkQuicklook = React.forwardRef<
     issuePrefetch = null,
     issueQuicklookSide = "top",
     issueQuicklookAlign = "start",
+    issueQuicklookClassName,
     onClick,
     onClickCapture,
     onMouseEnter,
@@ -419,7 +422,7 @@ export const IssueLinkQuicklook = React.forwardRef<
         ref={contentRef}
         // Opts into the scale-from-trigger motion defined in index.css.
         data-quicklook
-        className={QUICKLOOK_CONTENT_CLASS}
+        className={cn(QUICKLOOK_CONTENT_CLASS, issueQuicklookClassName)}
         side={issueQuicklookSide}
         align={issueQuicklookAlign}
         alignOffset={quicklookAlignOffset(issueQuicklookAlign)}

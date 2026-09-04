@@ -102,6 +102,8 @@ interface MarkdownEditorProps {
 export interface MarkdownEditorRef {
   focus: () => void;
   insertMarkdown: (markdown: string) => void;
+  /** Returns the editor's current value, including an edit not yet echoed to the parent. */
+  getMarkdown: () => string;
 }
 
 class MarkdownEditorRichErrorBoundary extends Component<
@@ -815,7 +817,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
     insertMarkdown,
-  }), [insertMarkdown, richEditorError]);
+    getMarkdown: () => {
+      if (richEditorError) return fallbackTextareaRef.current?.value ?? value;
+      return toStoredMarkdown(ref.current?.getMarkdown() ?? latestValueRef.current);
+    },
+  }), [insertMarkdown, richEditorError, value]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     if (!element) return;

@@ -12,6 +12,11 @@ const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+// Account-level quota message shape observed on the ACP lane (2026-09-02):
+// "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more
+// credits or try again at Sep 7th, 2026 8:05 AM." — an absolute date, not a bare clock time.
+const CODEX_USAGE_LIMIT_RETRY_AT_RE =
+  /(?:usage limit|at capacity|capacity limit)[\s\S]{0,240}?\btry again at\s+([^\n]+?)(?:[.!](?:\s|$)|\n|$)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
 const CODEX_REFRESH_TOKEN_EXPIRED_RE =
@@ -293,6 +298,16 @@ function parseLocalClockTime(clockText: string, now: Date): Date | null {
   return retryAt;
 }
 
+function parseAbsoluteRetryAt(text: string, now: Date): Date | null {
+  // "Sep 7th, 2026 8:05 AM" → "Sep 7, 2026 8:05 AM" (ordinal suffixes defeat Date parsing).
+  const normalized = text.trim().replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1").replace(/\s+/g, " ");
+  if (!normalized) return null;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return null;
+  // A reset time is always in the future; anything else is a mis-parse.
+  return parsed.getTime() > now.getTime() ? parsed : null;
+}
+
 export function extractCodexRetryNotBefore(input: {
   stdout?: string | null;
   stderr?: string | null;
@@ -300,8 +315,11 @@ export function extractCodexRetryNotBefore(input: {
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
-  if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  if (usageLimitMatch) return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  const retryAtMatch = haystack.match(CODEX_USAGE_LIMIT_RETRY_AT_RE);
+  if (!retryAtMatch) return null;
+  const retryAtText = retryAtMatch[1] ?? "";
+  return parseLocalClockTime(retryAtText, now) ?? parseAbsoluteRetryAt(retryAtText, now);
 }
 
 export function isCodexTransientUpstreamError(input: {

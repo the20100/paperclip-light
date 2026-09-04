@@ -5220,6 +5220,12 @@ export function IssueDetail() {
                       onDropFile: async (file) => {
                         await uploadAttachment.mutateAsync(file);
                       },
+                      attachments: attachmentList,
+                      onPreviewAttachment: (attachment) => {
+                        const index = mediaGalleryItems.findIndex((item) => item.id === attachment.id);
+                        setGalleryIndex(index >= 0 ? index : 0);
+                        setGalleryOpen(true);
+                      },
                     }
                   : undefined
               }
