@@ -5211,8 +5211,8 @@ export function IssueDetail() {
           }
         >
           {resolvedDetailTab === "chat" ? (
-            <div className={cn("min-h-0", taskChatShellEnabled && !isMobile && browserOpen ? "flex flex-1" : undefined)}>
-              <div className={cn("min-h-0", taskChatShellEnabled && !isMobile && browserOpen ? "min-w-0 flex-1" : undefined)}>
+            <div className={taskChatShellEnabled && !isMobile ? "flex min-h-0 min-w-0 flex-1" : "contents"}>
+              <div className={taskChatShellEnabled && !isMobile ? "flex min-h-0 min-w-0 flex-1 flex-col" : "contents"}>
               <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
               issueBrief={
