@@ -139,6 +139,7 @@ import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueCostSummaryStrip } from "../components/IssueCostSummaryStrip";
 import { IssueLightOperations } from "../components/IssueLightOperations";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
+import { TaskBrowserPanel } from "../components/TaskBrowserPanel";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGalleryModal";
 import { FileViewerProvider, useRequiredFileViewer } from "../context/FileViewerContext";
@@ -198,6 +199,7 @@ import {
   FileCode2,
   ListTree,
   MessageSquare,
+  MonitorPlay,
   MoreHorizontal,
   MoreVertical,
   PauseCircle,
@@ -1601,6 +1603,7 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [documentDeepLink, setDocumentDeepLink] = useState<
     (IssuePropertiesDocumentDeepLink & { issueId: string }) | null
   >(null);
@@ -4565,6 +4568,15 @@ export function IssueDetail() {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                onClick={() => setBrowserOpen(true)}
+                title="Open project browser"
+                aria-label="Open project browser"
+              >
+                <MonitorPlay className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 onClick={copyIssueToClipboard}
                 title="Copy task as markdown"
               >
@@ -4582,6 +4594,15 @@ export function IssueDetail() {
           )}
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
+            <Button
+              variant={browserOpen ? "secondary" : "ghost"}
+              size="icon-xs"
+              onClick={() => setBrowserOpen((open) => !open)}
+              title={browserOpen ? "Close project browser" : "Open project browser"}
+              aria-label={browserOpen ? "Close project browser" : "Open project browser"}
+            >
+              <MonitorPlay className="h-4 w-4" />
+            </Button>
             {canArchiveFromInbox && (
               <Button
                 variant="ghost"
@@ -5190,7 +5211,9 @@ export function IssueDetail() {
           }
         >
           {resolvedDetailTab === "chat" ? (
-            <IssueDetailChatTab
+            <div className={cn("min-h-0", taskChatShellEnabled && !isMobile && browserOpen ? "flex flex-1" : undefined)}>
+              <div className={cn("min-h-0", taskChatShellEnabled && !isMobile && browserOpen ? "min-w-0 flex-1" : undefined)}>
+              <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
               issueBrief={
                 // Suppress the seeded-description bubble for the onboarding first
@@ -5326,8 +5349,18 @@ export function IssueDetail() {
               onResumeAssignee={issue.assigneeAgentId ? handleResumeAssignee : undefined}
               resumeAssigneePending={resumeAssigneeAgent.isPending}
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-              linkCaseReferences={casesChipsEnabled}
-            />
+                linkCaseReferences={casesChipsEnabled}
+              />
+              </div>
+              {taskChatShellEnabled && !isMobile && browserOpen ? (
+                <TaskBrowserPanel
+                  issueId={issue.id}
+                  runtimeServices={issue.currentExecutionWorkspace?.runtimeServices}
+                  onClose={() => setBrowserOpen(false)}
+                  className="ml-3 w-1/2 min-w-80 max-w-2xl border-l border-border"
+                />
+              ) : null}
+            </div>
           ) : null}
         </TabsContent>
 
@@ -5559,6 +5592,16 @@ export function IssueDetail() {
               />
             </div>
           </ScrollArea>
+        </SheetContent>
+      </Sheet>
+      <Sheet open={browserOpen && isMobile} onOpenChange={setBrowserOpen}>
+        <SheetContent side="bottom" className="h-(--sz-90dvh) max-h-(--sz-90dvh) p-0 pb-(--sz-safe-bottom)">
+          <TaskBrowserPanel
+            issueId={issue.id}
+            runtimeServices={issue.currentExecutionWorkspace?.runtimeServices}
+            onClose={() => setBrowserOpen(false)}
+            className="h-full"
+          />
         </SheetContent>
       </Sheet>
       {fileViewerEnabled ? (
