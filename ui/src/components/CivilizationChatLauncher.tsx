@@ -222,49 +222,65 @@ export function CivilizationChatLauncher() {
 
   useEffect(() => {
     if (!open) return;
-    const panel = panelRef.current;
-    const main = document.getElementById("main-content");
-    const previous = {
-      documentOverflow: document.documentElement.style.overflow,
-      bodyOverflow: document.body.style.overflow,
-      mainOverflow: main?.style.overflow ?? "",
-      mainOverscrollBehavior: main?.style.overscrollBehavior ?? "",
-    };
-    const syncVisualViewport = () => {
-      const viewport = window.visualViewport;
-      panel?.style.setProperty("--sz-architect-visual-viewport-height", `${Math.round(viewport?.height ?? window.innerHeight)}px`);
-      panel?.style.setProperty("--sz-architect-visual-viewport-offset-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
-    };
-    const preventBackgroundScroll = (event: Event) => {
-      if (panel && !panel.contains(event.target as Node)) event.preventDefault();
-    };
+    const mobile = window.matchMedia("(max-width: 47.999rem)");
+    let releaseMobileLock = () => {};
 
-    document.documentElement.style.overflow = "hidden";
-    document.body.style.overflow = "hidden";
-    if (main) {
-      main.style.overflow = "hidden";
-      main.style.overscrollBehavior = "none";
-    }
-    syncVisualViewport();
-    const viewport = window.visualViewport;
-    viewport?.addEventListener("resize", syncVisualViewport);
-    viewport?.addEventListener("scroll", syncVisualViewport);
-    window.addEventListener("resize", syncVisualViewport);
-    document.addEventListener("touchmove", preventBackgroundScroll, { capture: true, passive: false });
-    document.addEventListener("wheel", preventBackgroundScroll, { capture: true, passive: false });
+    const updateForViewport = () => {
+      releaseMobileLock();
+      releaseMobileLock = () => {};
+      if (!mobile.matches) return;
 
-    return () => {
-      document.documentElement.style.overflow = previous.documentOverflow;
-      document.body.style.overflow = previous.bodyOverflow;
+      const panel = panelRef.current;
+      const main = document.getElementById("main-content");
+      const previous = {
+        documentOverflow: document.documentElement.style.overflow,
+        bodyOverflow: document.body.style.overflow,
+        mainOverflow: main?.style.overflow ?? "",
+        mainOverscrollBehavior: main?.style.overscrollBehavior ?? "",
+      };
+      const syncVisualViewport = () => {
+        const viewport = window.visualViewport;
+        panel?.style.setProperty("--sz-architect-visual-viewport-height", `${Math.round(viewport?.height ?? window.innerHeight)}px`);
+        panel?.style.setProperty("--sz-architect-visual-viewport-offset-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
+      };
+      const preventBackgroundScroll = (event: Event) => {
+        if (panel && !panel.contains(event.target as Node)) event.preventDefault();
+      };
+
+      document.documentElement.style.overflow = "hidden";
+      document.body.style.overflow = "hidden";
       if (main) {
-        main.style.overflow = previous.mainOverflow;
-        main.style.overscrollBehavior = previous.mainOverscrollBehavior;
+        main.style.overflow = "hidden";
+        main.style.overscrollBehavior = "none";
       }
-      viewport?.removeEventListener("resize", syncVisualViewport);
-      viewport?.removeEventListener("scroll", syncVisualViewport);
-      window.removeEventListener("resize", syncVisualViewport);
-      document.removeEventListener("touchmove", preventBackgroundScroll, true);
-      document.removeEventListener("wheel", preventBackgroundScroll, true);
+      syncVisualViewport();
+      const viewport = window.visualViewport;
+      viewport?.addEventListener("resize", syncVisualViewport);
+      viewport?.addEventListener("scroll", syncVisualViewport);
+      window.addEventListener("resize", syncVisualViewport);
+      document.addEventListener("touchmove", preventBackgroundScroll, { capture: true, passive: false });
+      document.addEventListener("wheel", preventBackgroundScroll, { capture: true, passive: false });
+
+      releaseMobileLock = () => {
+        document.documentElement.style.overflow = previous.documentOverflow;
+        document.body.style.overflow = previous.bodyOverflow;
+        if (main) {
+          main.style.overflow = previous.mainOverflow;
+          main.style.overscrollBehavior = previous.mainOverscrollBehavior;
+        }
+        viewport?.removeEventListener("resize", syncVisualViewport);
+        viewport?.removeEventListener("scroll", syncVisualViewport);
+        window.removeEventListener("resize", syncVisualViewport);
+        document.removeEventListener("touchmove", preventBackgroundScroll, true);
+        document.removeEventListener("wheel", preventBackgroundScroll, true);
+      };
+    };
+
+    updateForViewport();
+    mobile.addEventListener("change", updateForViewport);
+    return () => {
+      mobile.removeEventListener("change", updateForViewport);
+      releaseMobileLock();
     };
   }, [open]);
 
